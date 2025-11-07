@@ -2,8 +2,17 @@ import express from 'express';
 import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
 import { auth } from '../middleware/auth.js';
+import mongoose from 'mongoose';
 
 const router = express.Router();
+
+// Guard: ensure DB connection is ready before handling auth routes
+router.use((req, res, next) => {
+  if (mongoose.connection.readyState !== 1) {
+    return res.status(503).json({ message: 'Database initializing, please retry shortly' });
+  }
+  next();
+});
 
 // Register
 router.post('/register', async (req, res) => {
@@ -32,9 +41,10 @@ router.post('/register', async (req, res) => {
 
     await user.save();
 
+    const secret = process.env.JWT_SECRET || 'development_fallback_secret';
     const token = jwt.sign(
       { userId: user._id },
-      process.env.JWT_SECRET,
+      secret,
       { expiresIn: '7d' }
     );
 
@@ -69,9 +79,10 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ message: 'Invalid credentials' });
     }
 
+    const secret = process.env.JWT_SECRET || 'development_fallback_secret';
     const token = jwt.sign(
       { userId: user._id },
-      process.env.JWT_SECRET,
+      secret,
       { expiresIn: '7d' }
     );
 
@@ -88,7 +99,8 @@ router.post('/login', async (req, res) => {
       }
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error('Auth login error:', error);
+    res.status(500).json({ message: error.message || 'Internal Server Error' });
   }
 });
 
