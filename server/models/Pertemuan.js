@@ -95,7 +95,36 @@ const pertemuanSchema = new mongoose.Schema({
     jumlah_hadir: {
       type: Number,
       default: 0
+    },
+    fokus_count: {
+      type: Number,
+      default: 0
+    },
+    tidak_fokus_count: {
+      type: Number,
+      default: 0
+    },
+    sleeping_count: {
+      type: Number,
+      default: 0
+    },
+    phone_count: {
+      type: Number,
+      default: 0
+    },
+    yawning_count: {
+      type: Number,
+      default: 0
+    },
+    turning_back_count: {
+      type: Number,
+      default: 0
     }
+  },
+  detection_model_type: {
+    type: String,
+    enum: ['model_1', 'model_2'],
+    default: 'model_1'
   },
   catatan: {
     type: String,

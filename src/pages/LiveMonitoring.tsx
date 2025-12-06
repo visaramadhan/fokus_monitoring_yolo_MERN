@@ -1212,22 +1212,7 @@ export default function LiveMonitoring() {
                     {schedule.mata_kuliah} - {schedule.kelas} (Meeting {schedule.pertemuan_ke})
                   </option>
                 ))}
-                </select>
-                <button
-                  type="button"
-                  onClick={getCameraDevices}
-                  disabled={isMonitoring}
-                  className="px-2 py-1 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md text-sm flex items-center justify-center"
-                  title="Refresh camera list"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                  </svg>
-                </button>
-              </div>
-              {cameras.length === 0 && (
-                <p className="text-xs text-amber-600 mt-1">No cameras detected. Please check your camera permissions.</p>
-              )}
+              </select>
             </div>
 
             <div>

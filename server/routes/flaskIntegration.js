@@ -146,31 +146,4 @@ router.post('/stop-model', auth, async (req, res) => {
   }
 });
 
-// Set model type on Flask server
-router.post('/set-model-type', auth, async (req, res) => {
-  try {
-    const { model_type } = req.body;
-    
-    if (!model_type || !['model_1', 'model_2'].includes(model_type)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid model type. Must be model_1 or model_2'
-      });
-    }
-    
-    const response = await axios.post(`${FLASK_SERVER_URL}/api/set-model-type`, {
-      model_type: model_type
-    }, { timeout: 10000 });
-    
-    res.json(response.data);
-  } catch (error) {
-    console.error('Error setting model type:', error.response?.data || error.message);
-    res.status(500).json({ 
-      success: false,
-      message: 'Failed to set model type',
-      error: error.response?.data || error.message 
-    });
-  }
-});
-
 export default router;

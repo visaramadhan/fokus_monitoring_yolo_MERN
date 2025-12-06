@@ -437,39 +437,40 @@ def initialize_model():
     
     try:
         data = request.get_json()
-        detection_model_type = data.get('detection_model_type', 'model_1')
+        model_path = data.get('model_path')
+        model_type = data.get('model_type', 'auto')
         confidence_threshold = data.get('confidence_threshold', 0.5)
         iou_threshold = data.get('iou_threshold', 0.4)
         
-        logger.info(f"Initializing model with detection type: {detection_model_type}")
+        logger.info(f"Initializing model: {model_path}")
+        logger.info(f"Model type: {model_type}")
         logger.info(f"Confidence threshold: {confidence_threshold}")
         logger.info(f"IoU threshold: {iou_threshold}")
         
-        # Determine the correct model path based on detection_model_type
-        # Only use .py models
-        model_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
-                                 'uploads', 'models', f'{detection_model_type}.py')
-        
-        logger.info(f"Using model path: {model_path}")
-        
         # Validate model path
+        if not model_path:
+            return jsonify({
+                'success': False,
+                'message': 'Model path is required'
+            }), 400
+        
         if not os.path.exists(model_path):
             return jsonify({
                 'success': False,
                 'message': f'Model file not found: {model_path}'
             }), 400
         
-        # Initialize detector
+        # Initialize YOLO detector
         current_model = YOLODetector(
             model_path=model_path,
             confidence_threshold=confidence_threshold,
-            iou_threshold=iou_threshold
+            iou_threshold=iou_threshold,
+            model_type=model_type if model_type != 'auto' else None
         )
         
         model_config = {
             'model_path': model_path,
             'model_type': current_model.model_type,
-            'detection_model_type': detection_model_type,
             'confidence_threshold': confidence_threshold,
             'iou_threshold': iou_threshold,
             'status': 'active',
