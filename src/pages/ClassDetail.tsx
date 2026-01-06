@@ -39,6 +39,7 @@ export default function ClassDetail() {
   const [kelas, setKelas] = useState<Kelas | null>(null);
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [loading, setLoading] = useState(true);
+  const [focusThreshold, setFocusThreshold] = useState(70);
 
   useEffect(() => {
     if (id) {
@@ -113,6 +114,18 @@ export default function ClassDetail() {
   const averageFocus = meetings.length > 0 
     ? meetings.reduce((sum, meeting) => sum + meeting.hasil_akhir_kelas.fokus, 0) / meetings.length
     : 0;
+  const meetingsAboveThreshold = meetings.filter(m => (m.hasil_akhir_kelas.fokus || 0) >= focusThreshold).length;
+  const meetingsBelowThreshold = meetings.length - meetingsAboveThreshold;
+  const reasonSummary = (() => {
+    if (meetings.length === 0) return 'Belum ada pertemuan untuk dianalisis.';
+    if (averageFocus >= focusThreshold && meetingsBelowThreshold <= Math.ceil(meetings.length * 0.3)) {
+      return 'Kelas cenderung kondusif: rata-rata fokus di atas threshold dan mayoritas pertemuan memenuhi standar.';
+    }
+    if (averageFocus < focusThreshold && meetingsBelowThreshold >= Math.ceil(meetings.length * 0.5)) {
+      return 'Kelas cenderung tidak kondusif: rata-rata fokus di bawah threshold dan banyak pertemuan tidak memenuhi standar.';
+    }
+    return 'Kondisi fluktuatif: terdapat variasi fokus antar pertemuan yang signifikan.';
+  })();
 
   return (
     <div className="space-y-6">
@@ -192,6 +205,39 @@ export default function ClassDetail() {
             </div>
           </div>
         </div>
+      </div>
+
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-semibold text-gray-900">Analitik Kekondusifan</h3>
+          <div className="flex items-center space-x-3">
+            <span className="text-sm text-gray-600">Threshold</span>
+            <input
+              type="range"
+              min={50}
+              max={90}
+              value={focusThreshold}
+              onChange={(e) => setFocusThreshold(parseInt(e.target.value))}
+              className="w-32"
+            />
+            <span className="text-sm font-medium text-gray-900">{focusThreshold}%</span>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div className="bg-gray-50 rounded-lg p-4">
+            <p className="text-sm text-gray-600">Rata-rata Fokus</p>
+            <p className="text-2xl font-bold text-gray-900">{Math.round(averageFocus)}%</p>
+          </div>
+          <div className="bg-gray-50 rounded-lg p-4">
+            <p className="text-sm text-gray-600">Pertemuan ≥ Threshold</p>
+            <p className="text-2xl font-bold text-green-600">{meetingsAboveThreshold}</p>
+          </div>
+          <div className="bg-gray-50 rounded-lg p-4">
+            <p className="text-sm text-gray-600">Pertemuan &lt; Threshold</p>
+            <p className="text-2xl font-bold text-red-600">{meetingsBelowThreshold}</p>
+          </div>
+        </div>
+        <p className="mt-4 text-sm text-gray-700">{reasonSummary}</p>
       </div>
 
       {/* Students List */}

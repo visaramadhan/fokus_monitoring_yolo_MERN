@@ -16,7 +16,8 @@ import {
   Settings,
   Video,
   Zap,
-  CalendarDays
+  CalendarDays,
+  ClipboardList
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -33,6 +34,7 @@ export default function Layout({ children }: LayoutProps) {
   const adminNavigation = [
     { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard, color: 'text-blue-600' },
     { name: 'Live Monitoring', href: '/live-monitoring', icon: Video, color: 'text-red-600' },
+    { name: 'Manual Monitoring', href: '/manual-monitoring', icon: ClipboardList, color: 'text-pink-600' },
     { name: 'Schedule', href: '/jadwal', icon: CalendarDays, color: 'text-indigo-600' },
     { name: 'Classes', href: '/classes', icon: GraduationCap, color: 'text-green-600' },
     { name: 'Mata Kuliah', href: '/mata-kuliah', icon: BookOpen, color: 'text-purple-600' },
@@ -44,6 +46,7 @@ export default function Layout({ children }: LayoutProps) {
   const dosenNavigation = [
     { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard, color: 'text-blue-600' },
     { name: 'Live Monitoring', href: '/live-monitoring', icon: Video, color: 'text-red-600' },
+    { name: 'Manual Monitoring', href: '/manual-monitoring', icon: ClipboardList, color: 'text-pink-600' },
     { name: 'Schedule', href: '/jadwal', icon: CalendarDays, color: 'text-indigo-600' },
     { name: 'Classes', href: '/classes', icon: GraduationCap, color: 'text-green-600' },
     { name: 'Mata Kuliah', href: '/mata-kuliah', icon: BookOpen, color: 'text-purple-600' },

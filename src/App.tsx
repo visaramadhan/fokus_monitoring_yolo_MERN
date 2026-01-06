@@ -17,6 +17,7 @@ import SubjectDetail from './pages/SubjectDetail';
 import MeetingDetail from './pages/MeetingDetail';
 import CreateMeeting from './pages/CreateMeeting';
 import LiveMonitoring from './pages/LiveMonitoring';
+import ManualMonitoring from './pages/ManualMonitoring';
 import Settings from './pages/Settings';
 import Jadwal from './pages/Jadwal';
 import AnimatedBackground from './components/AnimatedBackground';
@@ -115,6 +116,14 @@ function App() {
               <ProtectedRoute>
                 <Layout>
                   <LiveMonitoring />
+                </Layout>
+              </ProtectedRoute>
+            } />
+
+            <Route path="/manual-monitoring" element={
+              <ProtectedRoute>
+                <Layout>
+                  <ManualMonitoring />
                 </Layout>
               </ProtectedRoute>
             } />

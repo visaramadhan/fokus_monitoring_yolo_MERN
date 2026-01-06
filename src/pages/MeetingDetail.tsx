@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import axios from 'axios';
-import { ArrowLeft, Calendar, Clock, Users, BarChart3, Eye, EyeOff, Download } from 'lucide-react';
+import { ArrowLeft, Calendar, Clock, Users, BarChart3, Eye, EyeOff, Download, Edit, Save, X } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts';
 import toast from 'react-hot-toast';
 
@@ -49,6 +49,8 @@ export default function MeetingDetail() {
   const [meeting, setMeeting] = useState<Meeting | null>(null);
   const [loading, setLoading] = useState(true);
   const [showAllStudents, setShowAllStudents] = useState(false);
+  const [isEditingFocus, setIsEditingFocus] = useState(false);
+  const [newFocusRate, setNewFocusRate] = useState(0);
 
   useEffect(() => {
     if (id) {
@@ -65,6 +67,39 @@ export default function MeetingDetail() {
       toast.error('Failed to fetch meeting details');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleUpdateFocus = async () => {
+    if (!meeting) return;
+    
+    // Validate input
+    if (newFocusRate < 0 || newFocusRate > 100) {
+      toast.error('Focus rate must be between 0 and 100');
+      return;
+    }
+
+    try {
+      const updatedData = {
+        hasil_akhir_kelas: {
+          ...meeting.hasil_akhir_kelas,
+          fokus: newFocusRate,
+          tidak_fokus: 100 - newFocusRate
+        }
+      };
+
+      await axios.put(`/pertemuan/${id}`, updatedData);
+      
+      setMeeting(prev => prev ? {
+        ...prev,
+        hasil_akhir_kelas: updatedData.hasil_akhir_kelas
+      } : null);
+      
+      setIsEditingFocus(false);
+      toast.success('Focus rate updated successfully');
+    } catch (error) {
+      console.error('Error updating focus rate:', error);
+      toast.error('Failed to update focus rate');
     }
   };
 
@@ -258,7 +293,57 @@ export default function MeetingDetail() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Overall Focus Distribution */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Overall Focus Distribution</h3>
+          <div className="flex justify-between items-center mb-4">
+            <h3 className="text-lg font-semibold text-gray-900">Overall Focus Distribution</h3>
+            {!isEditingFocus ? (
+              <button 
+                onClick={() => { 
+                  setNewFocusRate(meeting?.hasil_akhir_kelas.fokus || 0); 
+                  setIsEditingFocus(true); 
+                }} 
+                className="text-blue-600 hover:text-blue-800 p-1 rounded-full hover:bg-blue-50 transition-colors"
+                title="Edit Focus Rate"
+              >
+                <Edit className="h-4 w-4" />
+              </button>
+            ) : (
+              <div className="flex items-center space-x-2">
+                <button 
+                  onClick={handleUpdateFocus} 
+                  className="text-green-600 hover:text-green-800 p-1 rounded-full hover:bg-green-50 transition-colors"
+                  title="Save"
+                >
+                  <Save className="h-4 w-4" />
+                </button>
+                <button 
+                  onClick={() => setIsEditingFocus(false)} 
+                  className="text-red-600 hover:text-red-800 p-1 rounded-full hover:bg-red-50 transition-colors"
+                  title="Cancel"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            )}
+          </div>
+
+          {isEditingFocus && (
+            <div className="mb-4 bg-blue-50 p-4 rounded-lg">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Set Focus Rate (%)</label>
+              <div className="flex items-center space-x-2">
+                <input
+                  type="number"
+                  min="0"
+                  max="100"
+                  value={newFocusRate}
+                  onChange={(e) => setNewFocusRate(Number(e.target.value))}
+                  className="block w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                />
+                <span className="text-gray-500 font-medium">%</span>
+              </div>
+              <p className="mt-1 text-xs text-gray-500">Not focused rate will be automatically calculated as {100 - newFocusRate}%</p>
+            </div>
+          )}
+
           <ResponsiveContainer width="100%" height={250}>
             <PieChart>
               <Pie

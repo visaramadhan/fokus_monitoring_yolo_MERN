@@ -129,11 +129,20 @@ export default function CreateMeeting() {
     try {
       const focusData = generateFocusData(selectedClass.mahasiswa);
       
+      // Calculate average focus for the class
+      const totalFocus = focusData.reduce((sum, student) => sum + student.persen_fokus, 0);
+      const averageFocus = focusData.length > 0 ? Math.round(totalFocus / focusData.length) : 0;
+
       const meetingData = {
         ...data,
         mata_kuliah: selectedSubject.nama,
         dosen_id: selectedSubject.dosen_id,
-        data_fokus: focusData
+        data_fokus: focusData,
+        hasil_akhir_kelas: {
+          fokus: averageFocus,
+          tidak_fokus: 100 - averageFocus,
+          jumlah_hadir: focusData.length
+        }
       };
 
       const response = await axios.post('/pertemuan', meetingData);

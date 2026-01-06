@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, Fragment } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Play, 
@@ -121,7 +121,7 @@ export default function LiveMonitoring() {
   const [showCameraSettings, setShowCameraSettings] = useState(false);
   const [showAnalytics, setShowAnalytics] = useState(false);
   const [targetFocusRate, setTargetFocusRate] = useState(80); // Target focus rate in percentage
-  const [gridSize, setGridSize] = useState(3); // Grid size for seat layout
+  const [gridSize, setGridSize] = useState<'small' | 'medium' | 'large'>('medium'); // Grid size for seat layout
   const [savedLayouts, setSavedLayouts] = useState<{name: string, positions: SeatPosition[]}[]>([]);
   const [currentLayout, setCurrentLayout] = useState<string>('');
   
@@ -441,7 +441,7 @@ export default function LiveMonitoring() {
       toast.success(`Seat ${newSeat.seat_id} added${studentId ? ` with ID: ${studentId}` : ''}`);
     } else if (isDrawing) {
       // If drawing was too small, inform the user
-      toast.info('Drawing too small - try again with a larger area');
+      toast('Drawing too small - try again with a larger area', { icon: 'ℹ️' });
     }
 
     // Reset drawing state
@@ -525,8 +525,8 @@ export default function LiveMonitoring() {
     drawCanvas();
     
     // If we're in monitoring mode, start detection
-    if (isMonitoringActive && !isLabellingMode) {
-      startFlaskDetection();
+    if (isMonitoring && !isLabellingMode && currentSession?._id) {
+      startFlaskDetection(currentSession._id);
     }
   };
 
@@ -886,7 +886,7 @@ export default function LiveMonitoring() {
             return seat; // Return the new seat data as is
           }
           
-          let newSeat = { ...seat };
+          const newSeat = { ...seat };
 
           // Handle focus duration tracking
           if (seat.gesture_type === 'focused' && !existingSeat.face_detected) {
@@ -1304,6 +1304,7 @@ export default function LiveMonitoring() {
                 ))}
               </select>
             </div>
+            </div>
             
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center">
@@ -1327,7 +1328,7 @@ export default function LiveMonitoring() {
               </label>
               <select
                 value={gridSize}
-                onChange={(e) => setGridSize(parseInt(e.target.value))}
+                onChange={(e) => setGridSize(e.target.value as 'small' | 'medium' | 'large')}
                 className="w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
               >
                 <option value="small">Small (2x2)</option>
@@ -1378,7 +1379,7 @@ export default function LiveMonitoring() {
               )}
 
               {isLabellingMode && (
-                <>
+                <Fragment>
                   <motion.button
                     whileHover={{ scale: 1.02 }}
                     whileTap={{ scale: 0.98 }}
@@ -1398,7 +1399,7 @@ export default function LiveMonitoring() {
                     <Trash2 className="h-4 w-4 mr-2" />
                     Clear Seats
                   </motion.button>
-                </>
+                </Fragment>
               )}
 
               {!isMonitoring ? (
@@ -1425,7 +1426,7 @@ export default function LiveMonitoring() {
               )}
               
               {currentSession && (
-                <>
+                <Fragment>
                   <motion.button
                     whileHover={{ scale: 1.02 }}
                     whileTap={{ scale: 0.98 }}
@@ -1460,7 +1461,7 @@ toast('Upload feature will be available soon', {
                     <Upload className="h-4 w-4 mr-2" />
                     Upload Previous Data
                   </motion.button>
-                </>
+                </Fragment>
               )}
             </div>
           </div>
@@ -1493,12 +1494,12 @@ toast('Upload feature will be available soon', {
                 display: cameraStream ? 'block' : 'none',
                 cursor: isLabellingMode ? 'crosshair' : 'default',
                 backgroundColor: 'transparent',
-                touchAction: 'none' // Prevent scrolling while drawing
+                touchAction: 'none'
               }}
               onMouseDown={handleCanvasMouseDown}
               onMouseMove={handleCanvasMouseMove}
               onMouseUp={handleCanvasMouseUp}
-              onMouseLeave={handleCanvasMouseUp} // Cancel drawing if mouse leaves canvas
+              onMouseLeave={handleCanvasMouseUp}
             />
             
             {!cameraStream && (

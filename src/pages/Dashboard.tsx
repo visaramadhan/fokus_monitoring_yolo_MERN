@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { motion } from 'framer-motion';
+import { Link } from 'react-router-dom';
 import { 
   BookOpen, 
   Calendar, 
@@ -11,7 +12,8 @@ import {
   BarChart3,
   Users,
   Award,
-  Target
+  Target,
+  AlertCircle
 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, BarChart, Bar } from 'recharts';
 import { useAuth } from '../contexts/AuthContext';
@@ -65,11 +67,17 @@ export default function Dashboard() {
   const [classPerformance, setClassPerformance] = useState<ClassPerformance[]>([]);
   const [dosenPerformance, setDosenPerformance] = useState<DosenPerformance[]>([]);
   const [focusTrends, setFocusTrends] = useState<FocusTrend[]>([]);
+  const [classes, setClasses] = useState<{ _id: string; nama_kelas: string }[]>([]);
+  const [focusThreshold, setFocusThreshold] = useState(70);
+  const [trendFilterType, setTrendFilterType] = useState<'all' | 'kelas' | 'dosen'>('all');
+  const [trendFilterValue, setTrendFilterValue] = useState<string>('');
+  const [periodMonths, setPeriodMonths] = useState<number>(6);
   const [loading, setLoading] = useState(true);
   const { user } = useAuth();
 
   useEffect(() => {
     fetchDashboardData();
+    fetchClasses();
   }, []);
 
   const fetchDashboardData = async () => {
@@ -88,6 +96,15 @@ export default function Dashboard() {
       console.error('Error fetching dashboard data:', error);
     } finally {
       setLoading(false);
+    }
+  };
+  
+  const fetchClasses = async () => {
+    try {
+      const res = await axios.get<{ _id: string; nama_kelas: string }[]>('/kelas');
+      setClasses(res.data.map((k) => ({ _id: k._id, nama_kelas: k.nama_kelas })));
+    } catch (e) {
+      console.error('Error fetching classes list:', e);
     }
   };
 
@@ -137,6 +154,81 @@ export default function Dashboard() {
     focus: Math.round(dosen.averageFocus),
     meetings: dosen.totalMeetings
   }));
+  
+  const kondusifCount = classPerformance.filter(k => (k.averageFocus || 0) >= focusThreshold).length;
+  const tidakKondusifCount = (classPerformance.length || 0) - kondusifCount;
+  const kondusifPercent = classPerformance.length > 0 ? Math.round((kondusifCount / classPerformance.length) * 100) : 0;
+  const tidakKondusifPercent = classPerformance.length > 0 ? Math.round((tidakKondusifCount / classPerformance.length) * 100) : 0;
+  
+  const sortedBestClasses = [...classPerformance].sort((a, b) => (b.averageFocus || 0) - (a.averageFocus || 0)).slice(0, 5);
+  const sortedWorstClasses = [...classPerformance].sort((a, b) => (a.averageFocus || 0) - (b.averageFocus || 0)).slice(0, 5);
+  
+  const classIdByName: Record<string, string> = classes.reduce((acc, c) => {
+    acc[c.nama_kelas] = c._id;
+    return acc;
+  }, {} as Record<string, string>);
+  
+  const computeTrendData = (): FocusTrend[] => {
+    const end = new Date();
+    const start = new Date();
+    start.setMonth(end.getMonth() - (periodMonths - 1));
+    const months: string[] = [];
+    const tmp = new Date(start.getFullYear(), start.getMonth(), 1);
+    while (tmp <= end) {
+      months.push(`${tmp.getFullYear()}-${String(tmp.getMonth() + 1).padStart(2, '0')}`);
+      tmp.setMonth(tmp.getMonth() + 1);
+    }
+    if (trendFilterType === 'all' || !trendFilterValue) {
+      return focusTrends.filter(t => months.includes(t.month));
+    }
+    const filtered = recentMeetings.filter(m => 
+      trendFilterType === 'kelas' ? m.kelas === trendFilterValue : m.dosen_id.nama_lengkap === trendFilterValue
+    );
+    const bucket: Record<string, { sum: number; count: number }> = {};
+    months.forEach(m => { bucket[m] = { sum: 0, count: 0 }; });
+    filtered.forEach(m => {
+      const d = new Date(m.tanggal);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      if (!bucket[key]) bucket[key] = { sum: 0, count: 0 };
+      bucket[key].sum += m.hasil_akhir_kelas.fokus || 0;
+      bucket[key].count += 1;
+    });
+    return months.map(m => ({
+      month: m,
+      focus: bucket[m].count > 0 ? Math.round(bucket[m].sum / bucket[m].count) : 0,
+      meetings: bucket[m].count
+    }));
+  };
+  
+  const trendData = computeTrendData();
+  
+  const focusValues = recentMeetings.map(m => m.hasil_akhir_kelas.fokus || 0);
+  const focusMean = focusValues.length ? focusValues.reduce((s, v) => s + v, 0) / focusValues.length : 0;
+  const focusVariance = focusValues.length ? focusValues.reduce((s, v) => s + Math.pow(v - focusMean, 2), 0) / focusValues.length : 0;
+  const focusStdDev = Math.round(Math.sqrt(focusVariance));
+  const meetingsAboveThreshold = recentMeetings.filter(m => (m.hasil_akhir_kelas.fokus || 0) >= focusThreshold).length;
+  const consistencyPercent = recentMeetings.length ? Math.round((meetingsAboveThreshold / recentMeetings.length) * 100) : 0;
+  
+  const flaggedClasses = [...classPerformance]
+    .filter(k => (k.averageFocus || 0) < focusThreshold)
+    .sort((a, b) => (a.averageFocus || 0) - (b.averageFocus || 0))
+    .slice(0, 10);
+  
+  const exportFlaggedCSV = () => {
+    const headers = ['Class','Average Focus','Meetings','Note'];
+    const rows = flaggedClasses.map(k => {
+      const note = (k.averageFocus || 0) < focusThreshold ? 'Below threshold' : '';
+      return [k._id, Math.round(k.averageFocus || 0).toString(), (k.totalMeetings || 0).toString(), note];
+    });
+    const csv = [headers.join(','), ...rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'flagged-classes.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   if (loading) {
     return (
@@ -161,6 +253,74 @@ export default function Dashboard() {
             : "Here's what's happening with your classes today."
           }
         </p>
+      </motion.div>
+
+      {/* Executive Summary */}
+      <motion.div 
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="bg-white rounded-xl shadow-sm border border-gray-200 p-6"
+      >
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-semibold text-gray-900">Executive Summary</h3>
+          <div className="flex items-center space-x-3">
+            <span className="text-sm text-gray-600">Focus Threshold</span>
+            <input
+              type="range"
+              min={50}
+              max={90}
+              value={focusThreshold}
+              onChange={(e) => setFocusThreshold(parseInt(e.target.value))}
+              className="w-32"
+            />
+            <span className="text-sm font-medium text-gray-900">{focusThreshold}%</span>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+          <div className="bg-gray-50 rounded-lg p-4">
+            <p className="text-sm text-gray-600">Kelas Kondusif</p>
+            <p className="text-2xl font-bold text-green-600">{kondusifPercent}%</p>
+            <p className="text-xs text-gray-500">{kondusifCount} of {classPerformance.length}</p>
+          </div>
+          <div className="bg-gray-50 rounded-lg p-4">
+            <p className="text-sm text-gray-600">Kelas Tidak Kondusif</p>
+            <p className="text-2xl font-bold text-red-600">{tidakKondusifPercent}%</p>
+            <p className="text-xs text-gray-500">{tidakKondusifCount} of {classPerformance.length}</p>
+          </div>
+          <div className="bg-gray-50 rounded-lg p-4">
+            <p className="text-sm text-gray-600">Stabilitas</p>
+            <p className="text-2xl font-bold text-gray-900">{focusStdDev}</p>
+            <p className="text-xs text-gray-500">Std Dev Focus</p>
+          </div>
+          <div className="bg-gray-50 rounded-lg p-4">
+            <p className="text-sm text-gray-600">Konsistensi</p>
+            <p className="text-2xl font-bold text-gray-900">{consistencyPercent}%</p>
+            <p className="text-xs text-gray-500">Meetings ≥ threshold</p>
+          </div>
+        </div>
+        {sortedWorstClasses.length > 0 && (
+          <div className="mt-6">
+            <p className="text-sm font-medium text-gray-900 mb-2">Kelas Bermasalah</p>
+            <div className="space-y-2">
+              {sortedWorstClasses.slice(0,3).map(kelas => (
+                <div key={kelas._id} className="flex items-center justify-between bg-gray-50 rounded-lg p-3">
+                  <div>
+                    <p className="text-sm font-medium text-gray-900">{kelas._id}</p>
+                    <p className="text-xs text-gray-500">{kelas.totalMeetings} meetings</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="font-bold text-red-600">{Math.round(kelas.averageFocus)}%</p>
+                    {classIdByName[kelas._id] && (
+                      <Link to={`/classes/${classIdByName[kelas._id]}`} className="text-xs text-blue-600 hover:text-blue-500">
+                        Detail
+                      </Link>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </motion.div>
 
       {/* Stats Cards */}
@@ -197,10 +357,54 @@ export default function Dashboard() {
         >
           <div className="flex items-center justify-between mb-6">
             <h3 className="text-lg font-semibold text-gray-900">Focus Trends</h3>
-            <BarChart3 className="h-5 w-5 text-gray-400" />
+            <div className="flex items-center space-x-2">
+              <select
+                value={trendFilterType}
+                onChange={(e) => { setTrendFilterType(e.target.value as 'all' | 'kelas' | 'dosen'); setTrendFilterValue(''); }}
+                className="text-sm border border-gray-300 rounded-md px-2 py-1"
+              >
+                <option value="all">All</option>
+                <option value="kelas">By Class</option>
+                <option value="dosen">By Instructor</option>
+              </select>
+              {trendFilterType === 'kelas' && (
+                <select
+                  value={trendFilterValue}
+                  onChange={(e) => setTrendFilterValue(e.target.value)}
+                  className="text-sm border border-gray-300 rounded-md px-2 py-1"
+                >
+                  <option value="">Select Class</option>
+                  {classes.map(c => (
+                    <option key={c._id} value={c.nama_kelas}>{c.nama_kelas}</option>
+                  ))}
+                </select>
+              )}
+              {trendFilterType === 'dosen' && (
+                <select
+                  value={trendFilterValue}
+                  onChange={(e) => setTrendFilterValue(e.target.value)}
+                  className="text-sm border border-gray-300 rounded-md px-2 py-1"
+                >
+                  <option value="">Select Instructor</option>
+                  {dosenPerformance.map(d => (
+                    <option key={d._id} value={d.nama_lengkap}>{d.nama_lengkap}</option>
+                  ))}
+                </select>
+              )}
+              <select
+                value={periodMonths}
+                onChange={(e) => setPeriodMonths(parseInt(e.target.value))}
+                className="text-sm border border-gray-300 rounded-md px-2 py-1"
+              >
+                <option value={3}>3m</option>
+                <option value={6}>6m</option>
+                <option value={12}>12m</option>
+              </select>
+              <BarChart3 className="h-5 w-5 text-gray-400" />
+            </div>
           </div>
           <ResponsiveContainer width="100%" height={300}>
-            <LineChart data={focusTrends}>
+            <LineChart data={trendData}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="month" />
               <YAxis />
@@ -252,6 +456,76 @@ export default function Dashboard() {
                   style={{ backgroundColor: entry.color }}
                 ></div>
                 <span className="text-sm text-gray-600">{entry.name}: {entry.value}%</span>
+              </div>
+            ))}
+          </div>
+        </motion.div>
+      </div>
+
+      {/* Ranking Classes */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-white rounded-xl shadow-sm border border-gray-200 p-6"
+        >
+          <div className="flex items-center justify-between mb-6">
+            <h3 className="text-lg font-semibold text-gray-900">Top 5 Paling Fokus</h3>
+            <Target className="h-5 w-5 text-gray-400" />
+          </div>
+          <div className="space-y-4">
+            {sortedBestClasses.map((kelas, index) => (
+              <div key={kelas._id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                <div className="flex items-center">
+                  <div className={`w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-bold ${index === 0 ? 'bg-green-500' : 'bg-blue-500'}`}>
+                    {index + 1}
+                  </div>
+                  <div className="ml-3">
+                    <p className="font-medium text-gray-900">{kelas._id}</p>
+                    <p className="text-sm text-gray-500">{kelas.totalMeetings} meetings</p>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <p className="font-bold text-green-600">{Math.round(kelas.averageFocus)}%</p>
+                  {classIdByName[kelas._id] && (
+                    <Link to={`/classes/${classIdByName[kelas._id]}`} className="text-xs text-blue-600 hover:text-blue-500">
+                      Detail
+                    </Link>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </motion.div>
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-white rounded-xl shadow-sm border border-gray-200 p-6"
+        >
+          <div className="flex items-center justify-between mb-6">
+            <h3 className="text-lg font-semibold text-gray-900">Top 5 Paling Tidak Fokus</h3>
+            <AlertCircle className="h-5 w-5 text-gray-400" />
+          </div>
+          <div className="space-y-4">
+            {sortedWorstClasses.map((kelas, index) => (
+              <div key={kelas._id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                <div className="flex items-center">
+                  <div className={`w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-bold ${index === 0 ? 'bg-red-500' : 'bg-orange-500'}`}>
+                    {index + 1}
+                  </div>
+                  <div className="ml-3">
+                    <p className="font-medium text-gray-900">{kelas._id}</p>
+                    <p className="text-sm text-gray-500">{kelas.totalMeetings} meetings</p>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <p className="font-bold text-red-600">{Math.round(kelas.averageFocus)}%</p>
+                  {classIdByName[kelas._id] && (
+                    <Link to={`/classes/${classIdByName[kelas._id]}`} className="text-xs text-blue-600 hover:text-blue-500">
+                      Detail
+                    </Link>
+                  )}
+                </div>
               </div>
             ))}
           </div>
@@ -432,6 +706,78 @@ export default function Dashboard() {
           </table>
         </div>
       </motion.div>
+      
+      {/* KPI & Insights */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-white rounded-xl shadow-sm border border-gray-200 p-6"
+        >
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold text-gray-900">KPI & Indikator</h3>
+            <TrendingUp className="h-5 w-5 text-gray-400" />
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="bg-gray-50 rounded-lg p-4">
+              <p className="text-sm text-gray-600">Focus Rate</p>
+              <p className="text-2xl font-bold text-gray-900">{Math.round(stats?.averageFocus || 0)}%</p>
+              <p className="text-xs text-gray-500">Persentase fokus rata-rata</p>
+            </div>
+            <div className="bg-gray-50 rounded-lg p-4">
+              <p className="text-sm text-gray-600">Threshold</p>
+              <p className="text-2xl font-bold text-gray-900">{focusThreshold}%</p>
+              <p className="text-xs text-gray-500">Batas kondusif</p>
+            </div>
+            <div className="bg-gray-50 rounded-lg p-4">
+              <p className="text-sm text-gray-600">Stabilitas</p>
+              <p className="text-2xl font-bold text-gray-900">{focusStdDev}</p>
+              <p className="text-xs text-gray-500">Variasi fokus antar pertemuan</p>
+            </div>
+            <div className="bg-gray-50 rounded-lg p-4">
+              <p className="text-sm text-gray-600">Konsistensi</p>
+              <p className="text-2xl font-bold text-gray-900">{consistencyPercent}%</p>
+              <p className="text-xs text-gray-500">Proporsi pertemuan di atas threshold</p>
+            </div>
+          </div>
+        </motion.div>
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-white rounded-xl shadow-sm border border-gray-200 p-6"
+        >
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold text-gray-900">Insight & Evaluasi</h3>
+            <button
+              onClick={exportFlaggedCSV}
+              className="px-3 py-1 text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700"
+            >
+              Export CSV
+            </button>
+          </div>
+          {flaggedClasses.length === 0 ? (
+            <p className="text-sm text-gray-600">Tidak ada kelas yang diflag saat ini.</p>
+          ) : (
+            <div className="space-y-3">
+              {flaggedClasses.map(kelas => (
+                <div key={kelas._id} className="flex items-center justify-between bg-gray-50 rounded-lg p-3">
+                  <div>
+                    <p className="text-sm font-medium text-gray-900">{kelas._id}</p>
+                    <p className="text-xs text-gray-500">Rata-rata fokus {Math.round(kelas.averageFocus)}%</p>
+                  </div>
+                  <div className="text-right">
+                    {classIdByName[kelas._id] && (
+                      <Link to={`/classes/${classIdByName[kelas._id]}`} className="text-xs text-blue-600 hover:text-blue-500">
+                        Lihat Detail
+                      </Link>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </motion.div>
+      </div>
     </div>
   );
 }
