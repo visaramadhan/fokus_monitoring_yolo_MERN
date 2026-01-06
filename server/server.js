@@ -2,8 +2,10 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import mongoose from 'mongoose';
+import { MongoMemoryServer } from 'mongodb-memory-server';
+import checkDiskSpace from 'check-disk-space';
 import multer from 'multer';
-import path from 'path';
+import * as path from 'path';
 import { fileURLToPath } from 'url';
 import authRoutes from './routes/auth.js';
 import userRoutes from './routes/users.js';
@@ -98,30 +100,90 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Connect to MongoDB
-const mongoURI = process.env.MONGODB_URI;
+// DB status endpoint for monitoring readiness
+app.get('/db/status', (req, res) => {
+  const state = mongoose.connection.readyState; // 0: disconnected, 1: connected, 2: connecting, 3: disconnecting
+  const map = ['disconnected', 'connected', 'connecting', 'disconnecting'];
+  res.json({ readyState: state, stateText: map[state] });
+});
 
-if (!mongoURI) {
-  console.error("❌ MONGODB_URI is not defined in .env file");
-  process.exit(1);
+// Connect to MongoDB with fallback to in-memory for development
+async function initDatabase() {
+  const envUri = process.env.MONGODB_URI || process.env.MONGODB_ATLAS_URI;
+  const localUri = 'mongodb://127.0.0.1:27017/focus_monitoring';
+  const targetUri = envUri || localUri;
+
+  const maxRetries = 5;
+  const baseDelayMs = 1000;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      await mongoose.connect(targetUri, {
+        serverSelectionTimeoutMS: 8000,
+      });
+      console.log(`✅ Connected to MongoDB (${targetUri.includes('mongodb.net') ? 'Atlas' : 'local'})`);
+      await createDummyData();
+      console.log('✅ Dummy data created/verified');
+      return;
+    } catch (error) {
+      const msg = (error && error.message) ? error.message : String(error);
+      const isDnsError = /ENOTFOUND|EAI_AGAIN|getaddrinfo|Name resolution/i.test(msg);
+      const isAuthError = /auth/i.test(msg);
+      const isConnRefused = /ECONNREFUSED/i.test(msg);
+
+      console.error(`❌ MongoDB connection error (attempt ${attempt}/${maxRetries}): ${msg}`);
+      if (isDnsError) {
+        console.error('⚠️ DNS to Atlas failed. Check internet/DNS or use local MongoDB.');
+      } else if (isAuthError) {
+        console.error('⚠️ Authentication failed. Verify MONGODB_URI credentials and IP whitelist.');
+      } else if (isConnRefused) {
+        console.error('⚠️ Connection refused. If using local MongoDB, ensure mongod is running.');
+      }
+
+      if (attempt < maxRetries) {
+        const delay = baseDelayMs * attempt;
+        console.log(`⏳ Retrying in ${delay}ms...`);
+        await new Promise((r) => setTimeout(r, delay));
+      } else {
+        console.error('⚠️ All attempts failed. Please set MONGODB_URI to a reachable database or start local MongoDB.');
+      }
+    }
+  }
+
+  // Optional guarded in-memory fallback
+  if (String(process.env.ENABLE_IN_MEMORY).toLowerCase() === 'true') {
+    const requiredBytes = Number(process.env.MONGOMS_REQUIRED_FREE_BYTES || 800_000_000); // ~800MB
+    const driveRoot = path.parse(process.cwd()).root || 'C:\\';
+    try {
+      const { free } = await checkDiskSpace(driveRoot);
+      if (free < requiredBytes) {
+        console.warn('⚠️ In-memory MongoDB disabled: insufficient free space.');
+        console.warn(`Free: ${Math.round(free/1e6)}MB < Required: ${Math.round(requiredBytes/1e6)}MB`);
+        return;
+      }
+      console.log('⏳ Starting in-memory MongoDB (version 6.0.6)...');
+      const mongod = await MongoMemoryServer.create({
+        binary: { version: '6.0.6' }
+      });
+      const memUri = mongod.getUri();
+      await mongoose.connect(memUri, { serverSelectionTimeoutMS: 8000 });
+      console.log('✅ Connected to in-memory MongoDB');
+      await createDummyData();
+      console.log('✅ Dummy data created/verified (in-memory)');
+    } catch (err) {
+      console.error('❌ In-memory MongoDB startup failed:', err?.message || String(err));
+      console.error('⚠️ Please free up disk space or use a reachable MONGODB_URI.');
+    }
+  } else {
+    console.warn('ℹ️ In-memory fallback disabled. Set ENABLE_IN_MEMORY=true to enable.');
+  }
 }
 
-mongoose.connect(mongoURI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-})
-  .then(async () => {
-    console.log('✅ Connected to MongoDB');
-    await createDummyData();
-    console.log('✅ Dummy data created/verified');
-  })
-  .catch((error) => {
-    console.error('❌ MongoDB connection error:', error);
-  });
+initDatabase();
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-  console.log(`Health check: http://localhost:${PORT}/api/health`);
-  console.log(`Flask integration available at: http://localhost:${PORT}/api/flask`);
+  console.log(`Health check: http://localhost:${PORT}/health`);
+  console.log(`Flask integration available at: http://localhost:${PORT}/flask`);
   console.log(`Models directory: ${uploadsDir}`);
 });

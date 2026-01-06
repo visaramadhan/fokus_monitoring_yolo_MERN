@@ -23,7 +23,11 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 // Configure axios defaults
+<<<<<<< HEAD
 axios.defaults.baseURL = '/api';
+=======
+axios.defaults.baseURL = 'http://localhost:5002';
+>>>>>>> 8fb5c24ea2c3fe76469a6acbe3c9303fb840c865
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
