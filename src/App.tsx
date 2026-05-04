@@ -1,7 +1,8 @@
 import React from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate, useParams } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { StatusModalProvider } from './contexts/StatusModalContext';
 import Login from './pages/Login';
 import Register from './pages/Register';
 import ForgotPassword from './pages/ForgotPassword';
@@ -59,165 +60,178 @@ function PublicRoute({ children }: { children: React.ReactNode }) {
   return user ? <Navigate to="/dashboard" /> : <>{children}</>;
 }
 
+function SubjectPathRedirect() {
+  const { id } = useParams<{ id?: string }>();
+  if (id) return <Navigate to={`/mata-kuliah/${id}`} replace />;
+  return <Navigate to="/mata-kuliah" replace />;
+}
+
 function App() {
   return (
     <AuthProvider>
-      <Router>
-        <div className="App">
-          <Toaster 
-            position="top-right"
-            toastOptions={{
-              duration: 4000,
-              style: {
-                background: '#363636',
-                color: '#fff',
-              },
-              success: {
+      <StatusModalProvider>
+        <Router>
+          <div className="App">
+            <Toaster 
+              position="top-right"
+              toastOptions={{
+                duration: 4000,
                 style: {
-                  background: '#10B981',
+                  background: '#363636',
+                  color: '#fff',
                 },
-              },
-              error: {
-                style: {
-                  background: '#EF4444',
+                success: {
+                  style: {
+                    background: '#10B981',
+                  },
                 },
-              },
-            }}
-          />
-          
-          <Routes>
-            <Route path="/login" element={
-              <PublicRoute>
-                <Login />
-              </PublicRoute>
-            } />
-            <Route path="/register" element={
-              <PublicRoute>
-                <Register />
-              </PublicRoute>
-            } />
-            <Route path="/forgot-password" element={
-              <PublicRoute>
-                <ForgotPassword />
-              </PublicRoute>
-            } />
+                error: {
+                  style: {
+                    background: '#EF4444',
+                  },
+                },
+              }}
+            />
             
-            <Route path="/" element={<Navigate to="/dashboard" />} />
-            
-            <Route path="/dashboard" element={
-              <ProtectedRoute>
-                <Layout>
-                  <Dashboard />
-                </Layout>
-              </ProtectedRoute>
-            } />
-            
-            <Route path="/live-monitoring" element={
-              <ProtectedRoute>
-                <Layout>
-                  <LiveMonitoring />
-                </Layout>
-              </ProtectedRoute>
-            } />
+            <Routes>
+              <Route path="/login" element={
+                <PublicRoute>
+                  <Login />
+                </PublicRoute>
+              } />
+              <Route path="/register" element={
+                <PublicRoute>
+                  <Register />
+                </PublicRoute>
+              } />
+              <Route path="/forgot-password" element={
+                <PublicRoute>
+                  <ForgotPassword />
+                </PublicRoute>
+              } />
+              
+              <Route path="/" element={<Navigate to="/dashboard" />} />
+              
+              <Route path="/dashboard" element={
+                <ProtectedRoute>
+                  <Layout>
+                    <Dashboard />
+                  </Layout>
+                </ProtectedRoute>
+              } />
+              
+              <Route path="/live-monitoring" element={
+                <ProtectedRoute>
+                  <Layout>
+                    <LiveMonitoring />
+                  </Layout>
+                </ProtectedRoute>
+              } />
 
-            <Route path="/manual-monitoring" element={
-              <ProtectedRoute>
-                <Layout>
-                  <ManualMonitoring />
-                </Layout>
-              </ProtectedRoute>
-            } />
-            
-            <Route path="/jadwal" element={
-              <ProtectedRoute>
-                <Layout>
-                  <Jadwal />
-                </Layout>
-              </ProtectedRoute>
-            } />
-            
-            <Route path="/classes" element={
-              <ProtectedRoute>
-                <Layout>
-                  <Classes />
-                </Layout>
-              </ProtectedRoute>
-            } />
-            
-            <Route path="/classes/:id" element={
-              <ProtectedRoute>
-                <Layout>
-                  <ClassDetail />
-                </Layout>
-              </ProtectedRoute>
-            } />
-            
-            <Route path="/mata-kuliah" element={
-              <ProtectedRoute>
-                <Layout>
-                  <Subjects />
-                </Layout>
-              </ProtectedRoute>
-            } />
-            
-            <Route path="/mata-kuliah/:id" element={
-              <ProtectedRoute>
-                <Layout>
-                  <SubjectDetail />
-                </Layout>
-              </ProtectedRoute>
-            } />
-            
-            <Route path="/meetings" element={
-              <ProtectedRoute>
-                <Layout>
-                  <Meetings />
-                </Layout>
-              </ProtectedRoute>
-            } />
-            
-            <Route path="/meetings/create" element={
-              <ProtectedRoute>
-                <Layout>
-                  <CreateMeeting />
-                </Layout>
-              </ProtectedRoute>
-            } />
-            
-            <Route path="/meetings/:id" element={
-              <ProtectedRoute>
-                <Layout>
-                  <MeetingDetail />
-                </Layout>
-              </ProtectedRoute>
-            } />
-            
-            <Route path="/users" element={
-              <ProtectedRoute adminOnly>
-                <Layout>
-                  <Users />
-                </Layout>
-              </ProtectedRoute>
-            } />
-            
-            <Route path="/settings" element={
-              <ProtectedRoute adminOnly>
-                <Layout>
-                  <Settings />
-                </Layout>
-              </ProtectedRoute>
-            } />
-            
-            <Route path="/profile" element={
-              <ProtectedRoute>
-                <Layout>
-                  <Profile />
-                </Layout>
-              </ProtectedRoute>
-            } />
-          </Routes>
-        </div>
-      </Router>
+              <Route path="/manual-monitoring" element={
+                <ProtectedRoute>
+                  <Layout>
+                    <ManualMonitoring />
+                  </Layout>
+                </ProtectedRoute>
+              } />
+              
+              <Route path="/jadwal" element={
+                <ProtectedRoute>
+                  <Layout>
+                    <Jadwal />
+                  </Layout>
+                </ProtectedRoute>
+              } />
+              
+              <Route path="/classes" element={
+                <ProtectedRoute>
+                  <Layout>
+                    <Classes />
+                  </Layout>
+                </ProtectedRoute>
+              } />
+              
+              <Route path="/classes/:id" element={
+                <ProtectedRoute>
+                  <Layout>
+                    <ClassDetail />
+                  </Layout>
+                </ProtectedRoute>
+              } />
+              
+              <Route path="/mata-kuliah" element={
+                <ProtectedRoute>
+                  <Layout>
+                    <Subjects />
+                  </Layout>
+                </ProtectedRoute>
+              } />
+              
+              <Route path="/mata-kuliah/:id" element={
+                <ProtectedRoute>
+                  <Layout>
+                    <SubjectDetail />
+                  </Layout>
+                </ProtectedRoute>
+              } />
+
+              <Route path="/subjects" element={<SubjectPathRedirect />} />
+              <Route path="/subjects/:id" element={<SubjectPathRedirect />} />
+              
+              <Route path="/meetings" element={
+                <ProtectedRoute>
+                  <Layout>
+                    <Meetings />
+                  </Layout>
+                </ProtectedRoute>
+              } />
+              
+              <Route path="/meetings/create" element={
+                <ProtectedRoute>
+                  <Layout>
+                    <CreateMeeting />
+                  </Layout>
+                </ProtectedRoute>
+              } />
+              
+              <Route path="/meetings/:id" element={
+                <ProtectedRoute>
+                  <Layout>
+                    <MeetingDetail />
+                  </Layout>
+                </ProtectedRoute>
+              } />
+              
+              <Route path="/users" element={
+                <ProtectedRoute adminOnly>
+                  <Layout>
+                    <Users />
+                  </Layout>
+                </ProtectedRoute>
+              } />
+              
+              <Route path="/settings" element={
+                <ProtectedRoute adminOnly>
+                  <Layout>
+                    <Settings />
+                  </Layout>
+                </ProtectedRoute>
+              } />
+              
+              <Route path="/profile" element={
+                <ProtectedRoute>
+                  <Layout>
+                    <Profile />
+                  </Layout>
+                </ProtectedRoute>
+              } />
+
+              <Route path="*" element={<Navigate to="/dashboard" replace />} />
+            </Routes>
+          </div>
+        </Router>
+      </StatusModalProvider>
     </AuthProvider>
   );
 }

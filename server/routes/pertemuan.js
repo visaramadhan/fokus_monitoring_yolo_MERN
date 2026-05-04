@@ -1,18 +1,26 @@
 import express from 'express';
 import Pertemuan from '../models/Pertemuan.js';
 import { auth } from '../middleware/auth.js';
+import mongoose from 'mongoose';
 
 const router = express.Router();
 
 // Get all meetings
 router.get('/', auth, async (req, res) => {
   try {
-    const { kelas, mata_kuliah, dosen } = req.query;
+    const { kelas, mata_kuliah, dosen, mata_kuliah_id } = req.query;
     let query = {};
     
     if (kelas) query.kelas = kelas;
     if (mata_kuliah) query.mata_kuliah = mata_kuliah;
     if (dosen) query.dosen_id = dosen;
+    if (mata_kuliah_id) {
+      const raw = String(mata_kuliah_id);
+      if (!mongoose.Types.ObjectId.isValid(raw)) {
+        return res.status(400).json({ message: 'Invalid mata_kuliah_id' });
+      }
+      query.mata_kuliah_id = new mongoose.Types.ObjectId(raw);
+    }
 
     const pertemuan = await Pertemuan.find(query)
       .populate('dosen_id', 'nama_lengkap')
@@ -44,13 +52,27 @@ router.get('/:id', auth, async (req, res) => {
 // Create new meeting
 router.post('/', auth, async (req, res) => {
   try {
-    const pertemuan = new Pertemuan(req.body);
+    const payload = req.body || {};
+
+    if (payload.sessionId) {
+      const pertemuan = await Pertemuan.findOneAndUpdate(
+        { sessionId: payload.sessionId },
+        payload,
+        { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true }
+      ).populate([
+        { path: 'dosen_id', select: 'nama_lengkap' },
+        { path: 'mata_kuliah_id', select: 'nama kode' }
+      ]);
+      return res.status(200).json(pertemuan);
+    }
+
+    const pertemuan = new Pertemuan(payload);
     await pertemuan.save();
     await pertemuan.populate([
       { path: 'dosen_id', select: 'nama_lengkap' },
       { path: 'mata_kuliah_id', select: 'nama kode' }
     ]);
-    res.status(201).json(pertemuan);
+    return res.status(201).json(pertemuan);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

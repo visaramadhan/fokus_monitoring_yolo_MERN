@@ -4,13 +4,23 @@ import express from 'express';
 import LiveSession from '../models/LiveSession.js';
 import { auth } from '../middleware/auth.js';
 import { v4 as uuidv4 } from 'uuid';
+import mongoose from 'mongoose';
 
 const router = express.Router();
 
 // Start live monitoring session
 router.post('/start', auth, async (req, res) => {
   try {
-    const { kelas, mata_kuliah_id, mata_kuliah } = req.body;
+    const { kelas, mata_kuliah_id, mata_kuliah, dosen_id } = req.body;
+
+    let dosenIdToUse = req.user._id;
+    if (req.user.role === 'admin' && dosen_id) {
+      const raw = String(dosen_id);
+      if (!mongoose.Types.ObjectId.isValid(raw)) {
+        return res.status(400).json({ message: 'Invalid dosen_id' });
+      }
+      dosenIdToUse = new mongoose.Types.ObjectId(raw);
+    }
     
     const sessionId = uuidv4();
     const liveSession = new LiveSession({
@@ -18,7 +28,7 @@ router.post('/start', auth, async (req, res) => {
       kelas,
       mata_kuliah,
       mata_kuliah_id,
-      dosen_id: req.user._id
+      dosen_id: dosenIdToUse
     });
 
     await liveSession.save();

@@ -42,6 +42,11 @@ const dataFokusSchema = new mongoose.Schema({
 });
 
 const pertemuanSchema = new mongoose.Schema({
+  sessionId: {
+    type: String,
+    unique: true,
+    sparse: true
+  },
   tanggal: {
     type: Date,
     required: true
@@ -71,8 +76,7 @@ const pertemuanSchema = new mongoose.Schema({
   },
   durasi_pertemuan: {
     type: Number,
-    default: 100,
-    min: 30
+    default: 100
   },
   topik: {
     type: String,

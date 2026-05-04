@@ -43,7 +43,7 @@ const settingsSchema = new mongoose.Schema({
   // Database Configuration
   mongodbUri: {
     type: String,
-    default: 'mongodb+srv://sastyutari8:E5WV3BDAyqb22Pi7@fokus.yhhk5wc.mongodb.net/'
+    default: ''
   },
   backupInterval: {
     type: Number,

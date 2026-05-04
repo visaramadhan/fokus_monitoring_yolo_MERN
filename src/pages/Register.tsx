@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { Eye, EyeOff, LayoutDashboard } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import toast from 'react-hot-toast';
+import { useStatusModal } from '../contexts/StatusModalContext';
 
 interface RegisterForm {
   username: string;
@@ -21,13 +21,14 @@ export default function Register() {
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const { register: registerUser } = useAuth();
+  const { showSuccess, showError } = useStatusModal();
   
   const { register, handleSubmit, watch, formState: { errors } } = useForm<RegisterForm>();
   const watchPassword = watch('password');
 
   const onSubmit = async (data: RegisterForm) => {
     if (data.password !== data.confirmPassword) {
-      toast.error('Passwords do not match');
+      showError('Validasi', 'Password dan konfirmasi password tidak sama.');
       return;
     }
 
@@ -35,9 +36,9 @@ export default function Register() {
     try {
       const { confirmPassword, ...userData } = data;
       await registerUser(userData);
-      toast.success('Registration successful!');
+      showSuccess('Berhasil', 'Registrasi berhasil.');
     } catch (error: any) {
-      toast.error(error.message || 'Registration failed');
+      showError('Gagal', error.message || 'Registrasi gagal.');
     } finally {
       setIsLoading(false);
     }

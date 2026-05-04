@@ -68,43 +68,86 @@ export default function Dashboard() {
   const [dosenPerformance, setDosenPerformance] = useState<DosenPerformance[]>([]);
   const [focusTrends, setFocusTrends] = useState<FocusTrend[]>([]);
   const [classes, setClasses] = useState<{ _id: string; nama_kelas: string }[]>([]);
+  const [subjects, setSubjects] = useState<{ _id: string; nama: string }[]>([]);
   const [focusThreshold, setFocusThreshold] = useState(70);
-  const [trendFilterType, setTrendFilterType] = useState<'all' | 'kelas' | 'dosen'>('all');
+  const [trendFilterType, setTrendFilterType] = useState<'all' | 'kelas' | 'dosen' | 'mata_kuliah'>('all');
   const [trendFilterValue, setTrendFilterValue] = useState<string>('');
+  const [trendInterval, setTrendInterval] = useState<'month' | 'week'>('month');
   const [periodMonths, setPeriodMonths] = useState<number>(6);
+  const [periodWeeks, setPeriodWeeks] = useState<number>(8);
   const [loading, setLoading] = useState(true);
   const { user } = useAuth();
 
   useEffect(() => {
     fetchDashboardData();
     fetchClasses();
+    fetchSubjects();
   }, []);
 
   const fetchDashboardData = async () => {
     try {
       const [overviewRes, trendsRes] = await Promise.all([
-        axios.get('/dashboard/overview'),
-        axios.get('/dashboard/focus-trends')
+        axios.get('/api/dashboard/overview'),
+        axios.get(`/api/dashboard/focus-trends?interval=${trendInterval}`)
       ]);
 
-      setStats(overviewRes.data.stats);
-      setRecentMeetings(overviewRes.data.recentMeetings);
-      setClassPerformance(overviewRes.data.classPerformance);
-      setDosenPerformance(overviewRes.data.dosenPerformance || []);
-      setFocusTrends(trendsRes.data);
+      const overview = overviewRes.data || {};
+      setStats(overview.stats || null);
+      setRecentMeetings(Array.isArray(overview.recentMeetings) ? overview.recentMeetings : []);
+      setClassPerformance(Array.isArray(overview.classPerformance) ? overview.classPerformance : []);
+      setDosenPerformance(Array.isArray(overview.dosenPerformance) ? overview.dosenPerformance : []);
+      setFocusTrends(Array.isArray(trendsRes.data) ? trendsRes.data : []);
     } catch (error) {
       console.error('Error fetching dashboard data:', error);
+      setStats(null);
+      setRecentMeetings([]);
+      setClassPerformance([]);
+      setDosenPerformance([]);
+      setFocusTrends([]);
     } finally {
       setLoading(false);
     }
   };
   
+  useEffect(() => {
+    const fetchTrendsOnly = async () => {
+      try {
+        let url = `/api/dashboard/focus-trends?interval=${trendInterval}`;
+        if (trendFilterType === 'mata_kuliah' && trendFilterValue) {
+          const subject = subjects.find(s => s.nama === trendFilterValue);
+          if (subject) {
+            url += `&subjectId=${subject._id}`;
+          }
+        }
+        const res = await axios.get(url);
+        setFocusTrends(Array.isArray(res.data) ? res.data : []);
+      } catch (e) {
+        console.error('Error fetching focus trends:', e);
+        setFocusTrends([]);
+      }
+    };
+    fetchTrendsOnly();
+  }, [trendInterval, trendFilterType, trendFilterValue, subjects]);
+  
   const fetchClasses = async () => {
     try {
-      const res = await axios.get<{ _id: string; nama_kelas: string }[]>('/kelas');
-      setClasses(res.data.map((k) => ({ _id: k._id, nama_kelas: k.nama_kelas })));
+      const res = await axios.get('/api/kelas');
+      const raw = Array.isArray(res.data) ? res.data : Array.isArray(res.data?.data) ? res.data.data : [];
+      setClasses(raw.map((k: any) => ({ _id: k._id, nama_kelas: k.nama_kelas })));
     } catch (e) {
       console.error('Error fetching classes list:', e);
+      setClasses([]);
+    }
+  };
+  
+  const fetchSubjects = async () => {
+    try {
+      const res = await axios.get('/api/mata-kuliah');
+      const raw = Array.isArray(res.data) ? res.data : Array.isArray(res.data?.data) ? res.data.data : [];
+      setSubjects(raw.map((s: any) => ({ _id: s._id, nama: s.nama })));
+    } catch (e) {
+      console.error('Error fetching subjects list:', e);
+      setSubjects([]);
     }
   };
 
@@ -169,35 +212,73 @@ export default function Dashboard() {
   }, {} as Record<string, string>);
   
   const computeTrendData = (): FocusTrend[] => {
-    const end = new Date();
-    const start = new Date();
-    start.setMonth(end.getMonth() - (periodMonths - 1));
-    const months: string[] = [];
-    const tmp = new Date(start.getFullYear(), start.getMonth(), 1);
-    while (tmp <= end) {
-      months.push(`${tmp.getFullYear()}-${String(tmp.getMonth() + 1).padStart(2, '0')}`);
-      tmp.setMonth(tmp.getMonth() + 1);
-    }
     if (trendFilterType === 'all' || !trendFilterValue) {
-      return focusTrends.filter(t => months.includes(t.month));
+      const len = trendInterval === 'month' ? periodMonths : periodWeeks;
+      return focusTrends.slice(Math.max(0, focusTrends.length - len));
     }
     const filtered = recentMeetings.filter(m => 
-      trendFilterType === 'kelas' ? m.kelas === trendFilterValue : m.dosen_id.nama_lengkap === trendFilterValue
+      trendFilterType === 'kelas' 
+        ? m.kelas === trendFilterValue 
+        : trendFilterType === 'dosen' 
+          ? m.dosen_id.nama_lengkap === trendFilterValue
+          : m.mata_kuliah === trendFilterValue
     );
-    const bucket: Record<string, { sum: number; count: number }> = {};
-    months.forEach(m => { bucket[m] = { sum: 0, count: 0 }; });
-    filtered.forEach(m => {
-      const d = new Date(m.tanggal);
-      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-      if (!bucket[key]) bucket[key] = { sum: 0, count: 0 };
-      bucket[key].sum += m.hasil_akhir_kelas.fokus || 0;
-      bucket[key].count += 1;
-    });
-    return months.map(m => ({
-      month: m,
-      focus: bucket[m].count > 0 ? Math.round(bucket[m].sum / bucket[m].count) : 0,
-      meetings: bucket[m].count
-    }));
+    if (trendInterval === 'month') {
+      const end = new Date();
+      const start = new Date();
+      start.setMonth(end.getMonth() - (periodMonths - 1));
+      const months: string[] = [];
+      const tmp = new Date(start.getFullYear(), start.getMonth(), 1);
+      while (tmp <= end) {
+        months.push(`${tmp.getFullYear()}-${String(tmp.getMonth() + 1).padStart(2, '0')}`);
+        tmp.setMonth(tmp.getMonth() + 1);
+      }
+      const bucket: Record<string, { sum: number; count: number }> = {};
+      months.forEach(m => { bucket[m] = { sum: 0, count: 0 }; });
+      filtered.forEach(m => {
+        const d = new Date(m.tanggal);
+        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        if (!bucket[key]) bucket[key] = { sum: 0, count: 0 };
+        bucket[key].sum += m.hasil_akhir_kelas.fokus || 0;
+        bucket[key].count += 1;
+      });
+      return months.map(m => ({
+        month: m,
+        focus: bucket[m].count > 0 ? Math.round(bucket[m].sum / bucket[m].count) : 0,
+        meetings: bucket[m].count
+      }));
+    } else {
+      const end = new Date();
+      const weeks: string[] = [];
+      const len = periodWeeks;
+      const getIsoWeek = (d: Date) => {
+        const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+        const dayNum = date.getUTCDay() || 7;
+        date.setUTCDate(date.getUTCDate() + 4 - dayNum);
+        const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
+        const weekNo = Math.ceil((((date.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+        return `${date.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`;
+      };
+      const tmp = new Date(end);
+      for (let i = 0; i < len; i++) {
+        weeks.unshift(getIsoWeek(tmp));
+        tmp.setDate(tmp.getDate() - 7);
+      }
+      const bucket: Record<string, { sum: number; count: number }> = {};
+      weeks.forEach(w => { bucket[w] = { sum: 0, count: 0 }; });
+      filtered.forEach(m => {
+        const d = new Date(m.tanggal);
+        const key = getIsoWeek(d);
+        if (!bucket[key]) bucket[key] = { sum: 0, count: 0 };
+        bucket[key].sum += m.hasil_akhir_kelas.fokus || 0;
+        bucket[key].count += 1;
+      });
+      return weeks.map(w => ({
+        month: w,
+        focus: bucket[w].count > 0 ? Math.round(bucket[w].sum / bucket[w].count) : 0,
+        meetings: bucket[w].count
+      }));
+    }
   };
   
   const trendData = computeTrendData();
@@ -359,13 +440,22 @@ export default function Dashboard() {
             <h3 className="text-lg font-semibold text-gray-900">Focus Trends</h3>
             <div className="flex items-center space-x-2">
               <select
+                value={trendInterval}
+                onChange={(e) => setTrendInterval(e.target.value as 'month' | 'week')}
+                className="text-sm border border-gray-300 rounded-md px-2 py-1"
+              >
+                <option value="week">Mingguan</option>
+                <option value="month">Bulanan</option>
+              </select>
+              <select
                 value={trendFilterType}
-                onChange={(e) => { setTrendFilterType(e.target.value as 'all' | 'kelas' | 'dosen'); setTrendFilterValue(''); }}
+                onChange={(e) => { setTrendFilterType(e.target.value as 'all' | 'kelas' | 'dosen' | 'mata_kuliah'); setTrendFilterValue(''); }}
                 className="text-sm border border-gray-300 rounded-md px-2 py-1"
               >
                 <option value="all">All</option>
                 <option value="kelas">By Class</option>
                 <option value="dosen">By Instructor</option>
+                <option value="mata_kuliah">By Subject</option>
               </select>
               {trendFilterType === 'kelas' && (
                 <select
@@ -391,15 +481,39 @@ export default function Dashboard() {
                   ))}
                 </select>
               )}
-              <select
-                value={periodMonths}
-                onChange={(e) => setPeriodMonths(parseInt(e.target.value))}
-                className="text-sm border border-gray-300 rounded-md px-2 py-1"
-              >
-                <option value={3}>3m</option>
-                <option value={6}>6m</option>
-                <option value={12}>12m</option>
-              </select>
+              {trendFilterType === 'mata_kuliah' && (
+                <select
+                  value={trendFilterValue}
+                  onChange={(e) => setTrendFilterValue(e.target.value)}
+                  className="text-sm border border-gray-300 rounded-md px-2 py-1"
+                >
+                  <option value="">Select Subject</option>
+                  {subjects.map(s => (
+                    <option key={s._id} value={s.nama}>{s.nama}</option>
+                  ))}
+                </select>
+              )}
+              {trendInterval === 'month' ? (
+                <select
+                  value={periodMonths}
+                  onChange={(e) => setPeriodMonths(parseInt(e.target.value))}
+                  className="text-sm border border-gray-300 rounded-md px-2 py-1"
+                >
+                  <option value={3}>3m</option>
+                  <option value={6}>6m</option>
+                  <option value={12}>12m</option>
+                </select>
+              ) : (
+                <select
+                  value={periodWeeks}
+                  onChange={(e) => setPeriodWeeks(parseInt(e.target.value))}
+                  className="text-sm border border-gray-300 rounded-md px-2 py-1"
+                >
+                  <option value={4}>4w</option>
+                  <option value={8}>8w</option>
+                  <option value={12}>12w</option>
+                </select>
+              )}
               <BarChart3 className="h-5 w-5 text-gray-400" />
             </div>
           </div>

@@ -15,9 +15,9 @@ import {
   Database,
   Calendar
 } from 'lucide-react';
-import toast from 'react-hot-toast';
 import axios from 'axios';
 import { useAuth } from '../contexts/AuthContext';
+import { useStatusModal } from '../contexts/StatusModalContext';
 
 interface Seat {
   id: string;
@@ -41,8 +41,16 @@ interface MataKuliah {
   sks: number;
 }
 
+interface UserOption {
+  _id: string;
+  role: string;
+  nama_lengkap?: string;
+  username?: string;
+}
+
 export default function ManualMonitoring() {
   const { user } = useAuth();
+  const { showSuccess, showError } = useStatusModal();
   // Steps: 'setup' -> 'monitoring' -> 'summary'
   const [step, setStep] = useState<'setup' | 'monitoring' | 'summary'>('setup');
   
@@ -51,6 +59,11 @@ export default function ManualMonitoring() {
   const [loadingSubjects, setLoadingSubjects] = useState(true);
   const [selectedSubject, setSelectedSubject] = useState<MataKuliah | null>(null);
   const [sessionNumber, setSessionNumber] = useState(1);
+  const [schedules, setSchedules] = useState<any[]>([]);
+  const [loadingSchedules, setLoadingSchedules] = useState(true);
+  const [selectedScheduleId, setSelectedScheduleId] = useState<string>('');
+  const [dosenOptions, setDosenOptions] = useState<UserOption[]>([]);
+  const [selectedDosenId, setSelectedDosenId] = useState<string>('');
 
   // Configuration
   const [config, setConfig] = useState({
@@ -72,26 +85,104 @@ export default function ManualMonitoring() {
   const [selectedSeat, setSelectedSeat] = useState<Seat | null>(null);
   const [noteInput, setNoteInput] = useState('');
 
+  const todayStr = () => {
+    const d = new Date();
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  };
+
+  const isToday = (dateValue: any) => {
+    const d = new Date(dateValue);
+    if (Number.isNaN(d.getTime())) return false;
+    const now = new Date();
+    return (
+      d.getFullYear() === now.getFullYear() &&
+      d.getMonth() === now.getMonth() &&
+      d.getDate() === now.getDate()
+    );
+  };
+
+  useEffect(() => {
+    const fetchDosen = async () => {
+      if (user?.role !== 'admin') return;
+      try {
+        const res = await axios.get('/api/users');
+        const dosen = (res.data || []).filter((u: UserOption) => u.role === 'dosen');
+        setDosenOptions(dosen);
+      } catch (error) {
+        showError('Gagal', 'Gagal memuat data dosen.');
+      }
+    };
+    fetchDosen();
+  }, [user?.role]);
+
   // Fetch Subjects
   useEffect(() => {
     const fetchSubjects = async () => {
       try {
-        const res = await axios.get('/mata-kuliah');
+        setLoadingSubjects(true);
+        if (user?.role === 'admin' && !selectedDosenId) {
+          setSubjects([]);
+          setSelectedSubject(null);
+          return;
+        }
+        const params: any = {};
+        if (user?.role === 'admin' && selectedDosenId) {
+          params.dosen_id = selectedDosenId;
+        }
+        const res = await axios.get('/api/mata-kuliah', { params });
         setSubjects(res.data);
       } catch (error) {
         console.error('Error fetching subjects:', error);
-        toast.error('Failed to load subjects');
+        showError('Gagal', 'Gagal memuat data mata kuliah.');
       } finally {
         setLoadingSubjects(false);
       }
     };
     fetchSubjects();
-  }, []);
+  }, [user?.role, selectedDosenId]);
+  useEffect(() => {
+    const fetchSchedules = async () => {
+      try {
+        setLoadingSchedules(true);
+        if (user?.role === 'admin' && !selectedDosenId) {
+          setSchedules([]);
+          return;
+        }
+        if (!selectedSubject?._id || !config.className) {
+          setSchedules([]);
+          return;
+        }
+        const params: any = {
+          status: 'available',
+          date: todayStr(),
+          mata_kuliah_id: selectedSubject._id,
+          kelas: config.className
+        };
+        if (user?.role === 'admin' && selectedDosenId) {
+          params.dosen_id = selectedDosenId;
+        }
+        const res = await axios.get('/api/jadwal', { params });
+        setSchedules(res.data || []);
+      } catch (error) {
+        showError('Gagal', 'Gagal memuat data schedule.');
+      } finally {
+        setLoadingSchedules(false);
+      }
+    };
+    fetchSchedules();
+  }, [user?.role, selectedDosenId, selectedSubject?._id, config.className, selectedScheduleId]);
 
   // Setup Functions
   const generateGrid = () => {
     if (!config.className || !config.subject) {
-      toast.error('Please fill in Class Name and Subject');
+      showError('Validasi', 'Isi Class Name dan Subject terlebih dahulu.');
+      return;
+    }
+    if (!selectedScheduleId) {
+      showError('Validasi', 'Pilih schedule terlebih dahulu.');
       return;
     }
     
@@ -136,19 +227,19 @@ export default function ManualMonitoring() {
 
   const startSession = () => {
     setIsSessionActive(true);
-    toast.success('Monitoring session started');
+    showSuccess('Berhasil', 'Sesi monitoring dimulai.');
   };
 
   const stopSession = () => {
     setIsSessionActive(false);
     setStep('summary');
-    toast.success('Session ended');
+    showSuccess('Berhasil', 'Sesi selesai.');
   };
 
   // Interaction Functions
   const handleSeatClick = (seat: Seat) => {
     if (!isSessionActive) {
-      toast.error('Start the session first');
+      showError('Tidak Bisa', 'Mulai sesi terlebih dahulu.');
       return;
     }
     setSelectedSeat(seat);
@@ -177,7 +268,7 @@ export default function ManualMonitoring() {
         : s
     ));
 
-    toast.success(`Recorded distraction for ${selectedSeat.label}`);
+    showSuccess('Berhasil', `Distraction tercatat untuk ${selectedSeat.label}.`);
     setSelectedSeat(null);
   };
 
@@ -186,34 +277,50 @@ export default function ManualMonitoring() {
   };
 
   const saveToDatabase = async () => {
-    if (!selectedSubject) {
-      toast.error('Cannot save: No subject selected');
+    if (!selectedSubject && !selectedScheduleId) {
+      showError('Gagal Menyimpan', 'Tidak bisa menyimpan: mata kuliah atau schedule belum dipilih.');
       return;
     }
 
     setIsSaving(true);
     try {
       const totalEvents = distractionLog.length;
-      // Heuristic for focus percentage: 100 - (events * 2), min 0
-      // Or we can calculate it based on (Clean Seats / Total Seats)
       const cleanSeats = seats.filter(s => s.distractions === 0).length;
       const focusPercentage = Math.round((cleanSeats / seats.length) * 100);
+      const selectedSchedule = schedules.find((s: any) => s._id === selectedScheduleId);
+      const scheduleSubjectId =
+        selectedSchedule
+          ? (typeof (selectedSchedule as any).mata_kuliah_id === 'string'
+              ? ((selectedSchedule as any).mata_kuliah_id as string)
+              : ((selectedSchedule as any).mata_kuliah_id?._id as string | undefined))
+          : undefined;
 
-      // Construct payload for Pertemuan model
+      const mataKuliahId = scheduleSubjectId || selectedSubject?._id;
+      const mataKuliahName = selectedSchedule?.mata_kuliah || selectedSubject?.nama || config.subject;
+      const kelasName = selectedSchedule?.kelas || config.className;
+
+      if (!mataKuliahId || !mataKuliahName || !kelasName) {
+        showError('Gagal Menyimpan', 'Data tidak lengkap: mata kuliah/kelas belum terisi dengan benar.');
+        return;
+      }
+      if (selectedSchedule?.tanggal && !isToday(selectedSchedule.tanggal)) {
+        showError('Gagal Menyimpan', 'Schedule hanya bisa dilakukan pada tanggal yang dijadwalkan.');
+        return;
+      }
+
       const payload = {
-        tanggal: new Date(),
-        pertemuan_ke: sessionNumber,
-        kelas: config.className,
-        mata_kuliah: selectedSubject.nama,
-        mata_kuliah_id: selectedSubject._id,
-        dosen_id: user?.id,
-        durasi_pertemuan: Math.ceil(timer / 60), // in minutes
+        tanggal: selectedSchedule?.tanggal ? new Date(selectedSchedule.tanggal) : new Date(),
+        pertemuan_ke: selectedSchedule?.pertemuan_ke || sessionNumber,
+        kelas: kelasName,
+        mata_kuliah: mataKuliahName,
+        mata_kuliah_id: mataKuliahId,
+        dosen_id: user?.role === 'admin' ? selectedDosenId : user?.id,
+        durasi_pertemuan: Math.ceil(timer / 60),
         topik: 'Manual Monitoring Session',
-        // Map seats to data_fokus
         data_fokus: seats.map(seat => ({
-          id_siswa: seat.label, // Using seat label as ID since we don't have student mapping
-          jumlah_sesi_fokus: 1, // Treat entire session as 1 session
-          durasi_fokus: Math.max(0, Math.ceil(timer / 60) - (seat.distractions * 5)), // Penalty 5 mins per distraction
+          id_siswa: seat.label,
+          jumlah_sesi_fokus: 1,
+          durasi_fokus: Math.max(0, Math.ceil(timer / 60) - (seat.distractions * 5)),
           persen_fokus: seat.distractions === 0 ? 100 : Math.max(0, 100 - (seat.distractions * 10)),
           persen_tidak_fokus: seat.distractions === 0 ? 0 : Math.min(100, seat.distractions * 10),
           status: seat.distractions === 0 ? 'Baik' : seat.distractions <= 2 ? 'Cukup' : 'Kurang'
@@ -227,11 +334,17 @@ export default function ManualMonitoring() {
         }
       };
 
-      await axios.post('/pertemuan', payload);
-      toast.success('Data saved to database successfully!');
+      await axios.post('/api/pertemuan', payload);
+      if (selectedScheduleId) {
+        await axios.put(`/api/jadwal/${selectedScheduleId}`, { status: 'completed' });
+      }
+      showSuccess('Berhasil', 'Data berhasil disimpan ke database.');
+      setSelectedScheduleId('');
+      setIsSessionActive(false);
+      setStep('setup');
     } catch (error: any) {
       console.error('Error saving data:', error);
-      toast.error(error.response?.data?.message || 'Failed to save data');
+      showError('Gagal Menyimpan', error.response?.data?.message || error.message || 'Gagal menyimpan data.');
     } finally {
       setIsSaving(false);
     }
@@ -248,8 +361,44 @@ export default function ManualMonitoring() {
         <Grid3X3 className="mr-3 text-blue-600" />
         Setup Manual Monitoring
       </h2>
+
+      <div className="mb-6 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+        <div className="font-semibold mb-2">Panduan Penggunaan (Manual)</div>
+        <div className="space-y-1">
+          <div>1) Pilih data: {user?.role === 'admin' ? 'Dosen → Mata Kuliah → Kelas → Jadwal (Hari Ini)' : 'Mata Kuliah → Kelas → Jadwal (Hari Ini)'}</div>
+          <div>2) Atur layout kursi (Rows/Columns) → Create Layout.</div>
+          <div>3) Monitoring: Start → klik kursi untuk catat tidak fokus → Stop → Summary.</div>
+          <div>4) Save to Database: membuat data pertemuan/rekap dan mengubah status jadwal menjadi Completed, sehingga jadwal tidak muncul lagi.</div>
+        </div>
+      </div>
       
       <div className="space-y-6">
+        {user?.role === 'admin' && (
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Dosen Pengampu</label>
+            <div className="relative">
+              <Users className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-5 w-5" />
+              <select
+                value={selectedDosenId}
+                onChange={(e) => {
+                  const id = e.target.value;
+                  setSelectedDosenId(id);
+                  setSelectedSubject(null);
+                  setSelectedScheduleId('');
+                  setConfig((prev) => ({ ...prev, subject: '', className: '' }));
+                }}
+                className="pl-10 w-full border border-gray-300 rounded-lg p-2.5 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+              >
+                <option value="">Pilih Dosen</option>
+                {dosenOptions.map((d) => (
+                  <option key={d._id} value={d._id}>
+                    {d.nama_lengkap || d.username || d._id}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        )}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Subject</label>
@@ -263,11 +412,12 @@ export default function ManualMonitoring() {
                   onChange={(e) => {
                     const subj = subjects.find(s => s._id === e.target.value);
                     setSelectedSubject(subj || null);
-                    if (subj) {
-                      setConfig(prev => ({ ...prev, subject: subj.nama, className: subj.kelas[0] || '' }));
-                    }
+                    setSelectedScheduleId('');
+                    setSessionNumber(1);
+                    setConfig(prev => ({ ...prev, subject: subj?.nama || '', className: '' }));
                   }}
                   className="pl-10 w-full border border-gray-300 rounded-lg p-2.5 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+                  disabled={user?.role === 'admin' ? !selectedDosenId : false}
                 >
                   <option value="">Select Subject</option>
                   {subjects.map(s => (
@@ -284,7 +434,11 @@ export default function ManualMonitoring() {
               {selectedSubject && selectedSubject.kelas.length > 0 ? (
                 <select
                   value={config.className}
-                  onChange={(e) => setConfig({ ...config, className: e.target.value })}
+                  onChange={(e) => {
+                    setConfig({ ...config, className: e.target.value });
+                    setSelectedScheduleId('');
+                    setSessionNumber(1);
+                  }}
                   className="pl-10 w-full border border-gray-300 rounded-lg p-2.5 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
                 >
                   <option value="">Select Class</option>
@@ -296,12 +450,56 @@ export default function ManualMonitoring() {
                 <input
                   type="text"
                   value={config.className}
-                  onChange={(e) => setConfig({ ...config, className: e.target.value })}
+                  onChange={(e) => {
+                    setConfig({ ...config, className: e.target.value });
+                    setSelectedScheduleId('');
+                    setSessionNumber(1);
+                  }}
                   className="pl-10 w-full border border-gray-300 rounded-lg p-2.5 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                   placeholder="e.g., IF-4A"
                 />
               )}
             </div>
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-2">Schedule (Hari Ini)</label>
+          <div className="relative">
+            <Calendar className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-5 w-5" />
+            {loadingSchedules ? (
+              <div className="pl-10 py-2.5 text-gray-500">Loading schedules...</div>
+            ) : (
+              <select
+                value={selectedScheduleId}
+                onChange={(e) => {
+                  const id = e.target.value;
+                  setSelectedScheduleId(id);
+                  const sched = schedules.find((s) => s._id === id);
+                  if (sched) {
+                    setSessionNumber(sched.pertemuan_ke || 1);
+                    setConfig((prev) => ({
+                      ...prev,
+                      subject: sched.mata_kuliah || prev.subject,
+                      className: sched.kelas || prev.className
+                    }));
+                  }
+                }}
+                disabled={
+                  !selectedSubject?._id ||
+                  !config.className ||
+                  (user?.role === 'admin' ? !selectedDosenId : false)
+                }
+                className="pl-10 w-full border border-gray-300 rounded-lg p-2.5 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                <option value="">Select Schedule</option>
+                {schedules.map((s: any) => (
+                  <option key={s._id} value={s._id}>
+                    {s.mata_kuliah} - {s.kelas} - {new Date(s.tanggal).toLocaleDateString()} {s.jam_mulai}-{s.jam_selesai} (#{s.pertemuan_ke})
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
         </div>
 
@@ -315,7 +513,8 @@ export default function ManualMonitoring() {
               max="16"
               value={sessionNumber}
               onChange={(e) => setSessionNumber(parseInt(e.target.value) || 1)}
-              className="pl-10 w-full border border-gray-300 rounded-lg p-2.5 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              disabled={!!selectedScheduleId}
+              className="pl-10 w-full border border-gray-300 rounded-lg p-2.5 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:opacity-60 disabled:cursor-not-allowed"
             />
           </div>
         </div>
@@ -584,7 +783,7 @@ export default function ManualMonitoring() {
               
               <button
                 onClick={saveToDatabase}
-                disabled={isSaving || !selectedSubject}
+                disabled={isSaving || (!selectedSubject && !selectedScheduleId)}
                 className="px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 font-medium flex items-center shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {isSaving ? (

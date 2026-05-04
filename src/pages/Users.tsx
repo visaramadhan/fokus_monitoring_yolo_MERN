@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { Plus, Search, User, Edit, Trash2, Mail, Building } from 'lucide-react';
-import toast from 'react-hot-toast';
 import { useAuth } from '../contexts/AuthContext';
+import { useStatusModal } from '../contexts/StatusModalContext';
 
 interface User {
   _id: string;
@@ -22,6 +22,7 @@ export default function Users() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const { user: currentUser } = useAuth();
+  const { showSuccess, showError } = useStatusModal();
 
   useEffect(() => {
     fetchUsers();
@@ -29,11 +30,11 @@ export default function Users() {
 
   const fetchUsers = async () => {
     try {
-      const response = await axios.get('/users');
+      const response = await axios.get('/api/users');
       setUsers(Array.isArray(response.data) ? response.data : []);
     } catch (error) {
       console.error('Error fetching users:', error);
-      toast.error('Failed to fetch users');
+      showError('Gagal', 'Gagal mengambil data users.');
     } finally {
       setLoading(false);
     }
@@ -42,12 +43,12 @@ export default function Users() {
   const handleDelete = async (id: string) => {
     if (window.confirm('Are you sure you want to delete this user?')) {
       try {
-        await axios.delete(`/users/${id}`);
-        toast.success('User deleted successfully');
+        await axios.delete(`/api/users/${id}`);
+        showSuccess('Berhasil', 'User berhasil dihapus.');
         fetchUsers();
       } catch (error) {
         console.error('Error deleting user:', error);
-        toast.error('Failed to delete user');
+        showError('Gagal', 'Gagal menghapus user.');
       }
     }
   };
@@ -239,6 +240,7 @@ interface UserModalProps {
 }
 
 function UserModal({ user, onClose, onSuccess }: UserModalProps) {
+  const { showSuccess, showError } = useStatusModal();
   const [formData, setFormData] = useState({
     username: user?.username || '',
     email: user?.email || '',
@@ -269,22 +271,22 @@ function UserModal({ user, onClose, onSuccess }: UserModalProps) {
         if (!updateData.password) {
          delete updateData.password;
       }
-        await axios.put(`/users/${user._id}`, updateData);
-        toast.success('User updated successfully');
+        await axios.put(`/api/users/${user._id}`, updateData);
+        showSuccess('Berhasil', 'User berhasil diupdate.');
       } else {
         // Create user
         if (!formData.password) {
-          toast.error('Password is required for new users');
+          showError('Validasi', 'Password wajib diisi untuk user baru.');
           return;
         }
-        await axios.post('/auth/register', formData);
-        toast.success('User created successfully');
+        await axios.post('/api/auth/register', formData);
+        showSuccess('Berhasil', 'User berhasil dibuat.');
       }
       
       onSuccess();
     } catch (error: any) {
       console.error('Error saving user:', error);
-      toast.error(error.response?.data?.message || 'Failed to save user');
+      showError('Gagal', error.response?.data?.message || error.message || 'Gagal menyimpan user.');
     } finally {
       setLoading(false);
     }

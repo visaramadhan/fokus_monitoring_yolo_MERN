@@ -26,6 +26,10 @@ const detectionDataSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  yawningCount: {
+    type: Number,
+    default: 0
+  },
   sleepingCount: {
     type: Number,
     default: 0
@@ -38,7 +42,15 @@ const detectionDataSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  writingCount: {
+    type: Number,
+    default: 0
+  },
   focusPercentage: {
+    type: Number,
+    default: 0
+  },
+  record_interval_ms: {
     type: Number,
     default: 0
   },
@@ -88,6 +100,7 @@ const liveSessionSchema = new mongoose.Schema({
     type: Boolean,
     default: true
   },
+  state: mongoose.Schema.Types.Mixed,
   detectionData: [detectionDataSchema],
   summary: {
     totalDuration: {

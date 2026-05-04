@@ -21,7 +21,7 @@ import flaskIntegrationRoutes from './routes/flaskIntegration.js';
 import jadwalRoutes from './routes/jadwal.js';
 import modelsRoutes from './routes/models.js';
 import profileRoutes from './routes/profile.js';
-import { createDummyData } from './utils/seedData.js';
+import { createDummyData, purgeAllData, purgeDummyData } from './utils/seedData.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -42,6 +42,16 @@ if (!fs.existsSync(uploadsDir)) {
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// Guard: ensure DB connection is ready before serving API routes
+app.use((req, res, next) => {
+  const path = req.path || '';
+  if (path === '/health' || path === '/db/status') return next();
+  if (mongoose.connection.readyState !== 1) {
+    return res.status(503).json({ message: 'Database initializing, please retry shortly' });
+  }
+  next();
+});
 
 // Serve uploaded files
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
@@ -122,8 +132,18 @@ async function initDatabase() {
         serverSelectionTimeoutMS: 8000,
       });
       console.log(`✅ Connected to MongoDB (${targetUri.includes('mongodb.net') ? 'Atlas' : 'local'})`);
+
+      if (String(process.env.PURGE_ALL_DATA_ON_START).toLowerCase() === 'true') {
+        console.log('⚠️ PURGE_ALL_DATA_ON_START enabled. Deleting all documents...');
+        await purgeAllData();
+        console.log('✅ All data purged');
+      } else if (String(process.env.PURGE_DUMMY_DATA_ON_START).toLowerCase() === 'true') {
+        console.log('⚠️ PURGE_DUMMY_DATA_ON_START enabled. Deleting dummy documents...');
+        await purgeDummyData();
+        console.log('✅ Dummy data purged');
+      }
+
       await createDummyData();
-      console.log('✅ Dummy data created/verified');
       return;
     } catch (error) {
       const msg = (error && error.message) ? error.message : String(error);
@@ -168,8 +188,18 @@ async function initDatabase() {
       const memUri = mongod.getUri();
       await mongoose.connect(memUri, { serverSelectionTimeoutMS: 8000 });
       console.log('✅ Connected to in-memory MongoDB');
+
+      if (String(process.env.PURGE_ALL_DATA_ON_START).toLowerCase() === 'true') {
+        console.log('⚠️ PURGE_ALL_DATA_ON_START enabled. Deleting all documents...');
+        await purgeAllData();
+        console.log('✅ All data purged');
+      } else if (String(process.env.PURGE_DUMMY_DATA_ON_START).toLowerCase() === 'true') {
+        console.log('⚠️ PURGE_DUMMY_DATA_ON_START enabled. Deleting dummy documents...');
+        await purgeDummyData();
+        console.log('✅ Dummy data purged');
+      }
+
       await createDummyData();
-      console.log('✅ Dummy data created/verified (in-memory)');
     } catch (err) {
       console.error('❌ In-memory MongoDB startup failed:', err?.message || String(err));
       console.error('⚠️ Please free up disk space or use a reachable MONGODB_URI.');

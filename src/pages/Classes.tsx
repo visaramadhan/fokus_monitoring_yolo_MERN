@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import axios from 'axios';
 import { Plus, Search, Users, Eye, Edit, Trash2 } from 'lucide-react';
-import toast from 'react-hot-toast';
+import { useStatusModal } from '../contexts/StatusModalContext';
 
 interface Kelas {
   _id: string;
@@ -18,6 +18,7 @@ interface Kelas {
 }
 
 export default function Classes() {
+  const { showSuccess, showError } = useStatusModal();
   const [classes, setClasses] = useState<Kelas[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -30,11 +31,11 @@ export default function Classes() {
 
   const fetchClasses = async () => {
     try {
-      const response = await axios.get('/kelas');
+      const response = await axios.get('/api/kelas');
       setClasses(response.data);
     } catch (error) {
       console.error('Error fetching classes:', error);
-      toast.error('Failed to fetch classes');
+      showError('Gagal', 'Gagal mengambil data kelas.');
     } finally {
       setLoading(false);
     }
@@ -43,12 +44,12 @@ export default function Classes() {
   const handleDelete = async (id: string) => {
     if (window.confirm('Are you sure you want to delete this class?')) {
       try {
-        await axios.delete(`/kelas/${id}`);
-        toast.success('Class deleted successfully');
+        await axios.delete(`/api/kelas/${id}`);
+        showSuccess('Berhasil', 'Kelas berhasil dihapus.');
         fetchClasses();
       } catch (error) {
         console.error('Error deleting class:', error);
-        toast.error('Failed to delete class');
+        showError('Gagal', 'Gagal menghapus kelas.');
       }
     }
   };
@@ -176,6 +177,7 @@ interface ClassModalProps {
 }
 
 function ClassModal({ kelas, onClose, onSuccess }: ClassModalProps) {
+  const { showSuccess, showError } = useStatusModal();
   const [formData, setFormData] = useState({
     nama_kelas: kelas?.nama_kelas || '',
     tahun_ajaran: kelas?.tahun_ajaran || '2024/2025',
@@ -204,17 +206,17 @@ function ClassModal({ kelas, onClose, onSuccess }: ClassModalProps) {
       };
 
       if (kelas) {
-        await axios.put(`/kelas/${kelas._id}`, payload);
-        toast.success('Class updated successfully');
+        await axios.put(`/api/kelas/${kelas._id}`, payload);
+        showSuccess('Berhasil', 'Kelas berhasil diupdate.');
       } else {
-        await axios.post('/kelas', payload);
-        toast.success('Class created successfully');
+        await axios.post('/api/kelas', payload);
+        showSuccess('Berhasil', 'Kelas berhasil dibuat.');
       }
       
       onSuccess();
     } catch (error: any) {
       console.error('Error saving class:', error);
-      toast.error(error.response?.data?.message || 'Failed to save class');
+      showError('Gagal', error.response?.data?.message || error.message || 'Gagal menyimpan kelas.');
     } finally {
       setLoading(false);
     }

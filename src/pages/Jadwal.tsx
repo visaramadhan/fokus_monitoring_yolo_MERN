@@ -2,8 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Plus, Search, Calendar, Clock, Users, BookOpen, Eye, Edit, Trash2, User } from 'lucide-react';
 import axios from 'axios';
-import toast from 'react-hot-toast';
 import { useAuth } from '../contexts/AuthContext';
+import { useStatusModal } from '../contexts/StatusModalContext';
 
 interface Schedule {
   _id: string;
@@ -36,6 +36,7 @@ interface Subject {
 
 export default function Jadwal() {
   const { user } = useAuth();
+  const { showSuccess, showError } = useStatusModal();
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [loading, setLoading] = useState(true);
@@ -50,11 +51,11 @@ export default function Jadwal() {
 
   const fetchSchedules = async () => {
     try {
-      const response = await axios.get('/jadwal');
+      const response = await axios.get('/api/jadwal');
       setSchedules(Array.isArray(response.data) ? response.data : []);
     } catch (error) {
       console.error('Error fetching schedules:', error);
-      toast.error('Failed to fetch schedules');
+      showError('Gagal', 'Gagal mengambil data jadwal.');
     } finally {
       setLoading(false);
     }
@@ -62,22 +63,23 @@ export default function Jadwal() {
 
   const fetchSubjects = async () => {
     try {
-      const response = await axios.get('/mata-kuliah');
+      const response = await axios.get('/api/mata-kuliah');
       setSubjects(Array.isArray(response.data) ? response.data : []);
     } catch (error) {
       console.error('Error fetching subjects:', error);
+      showError('Gagal', 'Gagal mengambil data mata kuliah.');
     }
   };
 
   const handleDelete = async (id: string) => {
     if (window.confirm('Are you sure you want to delete this schedule?')) {
       try {
-        await axios.delete(`/jadwal/${id}`);
-        toast.success('Schedule deleted successfully');
+        await axios.delete(`/api/jadwal/${id}`);
+        showSuccess('Berhasil', 'Jadwal berhasil dihapus.');
         fetchSchedules();
       } catch (error) {
         console.error('Error deleting schedule:', error);
-        toast.error('Failed to delete schedule');
+        showError('Gagal', 'Gagal menghapus jadwal.');
       }
     }
   };
@@ -189,6 +191,19 @@ export default function Jadwal() {
               {Array.from(new Set(schedules.map(s => s.mata_kuliah_id))).length}
             </p>
           </div>
+        </div>
+      </motion.div>
+
+      <motion.div 
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="bg-white rounded-lg shadow p-4 mb-2"
+      >
+        <div className="flex items-center space-x-3">
+          <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${getStatusColor('scheduled')}`}>Scheduled</span>
+          <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${getStatusColor('ongoing')}`}>Ongoing</span>
+          <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${getStatusColor('completed')}`}>Completed</span>
+          <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${getStatusColor('cancelled')}`}>Cancelled</span>
         </div>
       </motion.div>
 
@@ -342,6 +357,7 @@ interface ScheduleModalProps {
 
 function ScheduleModal({ schedule, subjects, onClose, onSuccess }: ScheduleModalProps) {
   const { user } = useAuth();
+  const { showSuccess, showError } = useStatusModal();
   const [formData, setFormData] = useState({
     mata_kuliah_id: schedule?.mata_kuliah_id || '',
     kelas: schedule?.kelas || '',
@@ -382,7 +398,7 @@ function ScheduleModal({ schedule, subjects, onClose, onSuccess }: ScheduleModal
     try {
       const subject = subjects.find(s => s._id === formData.mata_kuliah_id);
       if (!subject) {
-        toast.error('Please select a valid subject');
+        showError('Validasi', 'Pilih mata kuliah yang valid.');
         return;
       }
 
@@ -400,17 +416,17 @@ function ScheduleModal({ schedule, subjects, onClose, onSuccess }: ScheduleModal
       };
 
       if (schedule) {
-        await axios.put(`/jadwal/${schedule._id}`, payload);
-        toast.success('Schedule updated successfully');
+        await axios.put(`/api/jadwal/${schedule._id}`, payload);
+        showSuccess('Berhasil', 'Jadwal berhasil diupdate.');
       } else {
-        await axios.post('/jadwal', payload);
-        toast.success('Schedule created successfully');
+        await axios.post('/api/jadwal', payload);
+        showSuccess('Berhasil', 'Jadwal berhasil dibuat.');
       }
       
       onSuccess();
     } catch (error: any) {
       console.error('Error saving schedule:', error);
-      toast.error(error.response?.data?.message || 'Failed to save schedule');
+      showError('Gagal', error.response?.data?.message || error.message || 'Gagal menyimpan jadwal.');
     } finally {
       setLoading(false);
     }

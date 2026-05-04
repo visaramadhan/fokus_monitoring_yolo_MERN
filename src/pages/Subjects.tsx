@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import axios from 'axios';
 import { Plus, Search, BookOpen, Eye, Edit, Trash2, User } from 'lucide-react';
-import toast from 'react-hot-toast';
+import { useStatusModal } from '../contexts/StatusModalContext';
 
 interface MataKuliah {
   _id: string;
@@ -25,6 +25,7 @@ interface DosenOption {
 }
 
 export default function Subjects() {
+  const { showSuccess, showError } = useStatusModal();
   const [subjects, setSubjects] = useState<MataKuliah[]>([]);
   const [dosens, setDosens] = useState<DosenOption[]>([]);
   const [loading, setLoading] = useState(true);
@@ -39,11 +40,11 @@ export default function Subjects() {
 
   const fetchSubjects = async () => {
     try {
-      const response = await axios.get('/mata-kuliah');
+      const response = await axios.get('/api/mata-kuliah');
       setSubjects(response.data);
     } catch (error) {
       console.error('Error fetching subjects:', error);
-      toast.error('Failed to fetch subjects');
+      showError('Gagal', 'Gagal mengambil data mata kuliah.');
     } finally {
       setLoading(false);
     }
@@ -51,7 +52,7 @@ export default function Subjects() {
 
   const fetchDosens = async () => {
     try {
-      const response = await axios.get('/users');
+      const response = await axios.get('/api/users');
       setDosens(response.data.filter((user: any) => user.role === 'dosen'));
     } catch (error) {
       console.error('Error fetching dosens:', error);
@@ -61,12 +62,12 @@ export default function Subjects() {
   const handleDelete = async (id: string) => {
     if (window.confirm('Are you sure you want to delete this subject?')) {
       try {
-        await axios.delete(`/mata-kuliah/${id}`);
-        toast.success('Subject deleted successfully');
+        await axios.delete(`/api/mata-kuliah/${id}`);
+        showSuccess('Berhasil', 'Mata kuliah berhasil dihapus.');
         fetchSubjects();
       } catch (error) {
         console.error('Error deleting subject:', error);
-        toast.error('Failed to delete subject');
+        showError('Gagal', 'Gagal menghapus mata kuliah.');
       }
     }
   };
@@ -221,6 +222,7 @@ interface SubjectModalProps {
 }
 
 function SubjectModal({ subject, dosens, onClose, onSuccess }: SubjectModalProps) {
+  const { showSuccess, showError } = useStatusModal();
   const [formData, setFormData] = useState({
     nama: subject?.nama || '',
     kode: subject?.kode || '',
@@ -243,17 +245,17 @@ function SubjectModal({ subject, dosens, onClose, onSuccess }: SubjectModalProps
       };
 
       if (subject) {
-        await axios.put(`/mata-kuliah/${subject._id}`, payload);
-        toast.success('Subject updated successfully');
+        await axios.put(`/api/mata-kuliah/${subject._id}`, payload);
+        showSuccess('Berhasil', 'Mata kuliah berhasil diupdate.');
       } else {
-        await axios.post('/mata-kuliah', payload);
-        toast.success('Subject created successfully');
+        await axios.post('/api/mata-kuliah', payload);
+        showSuccess('Berhasil', 'Mata kuliah berhasil dibuat.');
       }
       
       onSuccess();
     } catch (error: any) {
       console.error('Error saving subject:', error);
-      toast.error(error.response?.data?.message || 'Failed to save subject');
+      showError('Gagal', error.response?.data?.message || error.message || 'Gagal menyimpan mata kuliah.');
     } finally {
       setLoading(false);
     }

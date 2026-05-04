@@ -4,8 +4,8 @@ import { motion } from 'framer-motion';
 import axios from 'axios';
 import { User, Mail, Building, Hash, Save, BookOpen, Calendar, BarChart3, Award, TrendingUp } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
-import toast from 'react-hot-toast';
 import { useAuth } from '../contexts/AuthContext';
+import { useStatusModal } from '../contexts/StatusModalContext';
 
 interface ProfileForm {
   nama_lengkap: string;
@@ -53,6 +53,7 @@ interface AdminStats {
 
 export default function Profile() {
   const { user, logout } = useAuth();
+  const { showSuccess, showError } = useStatusModal();
   const [loading, setLoading] = useState(false);
   const [dosenStats, setDosenStats] = useState<DosenStats | null>(null);
   const [adminStats, setAdminStats] = useState<AdminStats | null>(null);
@@ -94,11 +95,11 @@ export default function Profile() {
     
     setLoading(true);
     try {
-      await axios.put(`/users/${user.id}`, data);
-      toast.success('Profile updated successfully');
+      await axios.put(`/api/users/${user.id}`, data);
+      showSuccess('Berhasil', 'Profil berhasil diupdate.');
     } catch (error: any) {
       console.error('Error updating profile:', error);
-      toast.error(error.response?.data?.message || 'Failed to update profile');
+      showError('Gagal', error.response?.data?.message || error.message || 'Gagal update profil.');
     } finally {
       setLoading(false);
     }

@@ -9,6 +9,11 @@ import os
 from datetime import datetime
 import logging
 import sys
+import threading
+
+_ultra_settings_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.ultralytics')
+os.makedirs(_ultra_settings_dir, exist_ok=True)
+os.environ.setdefault('ULTRALYTICS_SETTINGS_DIR', _ultra_settings_dir)
 
 app = Flask(__name__)
 CORS(app)
@@ -18,7 +23,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('flask_server.log'),
+        logging.FileHandler(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'flask_server_runtime.log')),
         logging.StreamHandler(sys.stdout)
     ]
 )
@@ -27,6 +32,216 @@ logger = logging.getLogger(__name__)
 # Global variables for model
 current_model = None
 model_config = {}
+object_model = None
+object_model_path = None
+object_model_lock = threading.Lock()
+face_cascade = None
+face_lock = threading.Lock()
+
+
+def _get_server_root_dir():
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _select_default_object_model_path():
+    server_root = _get_server_root_dir()
+    candidates = [
+        os.path.join(server_root, 'uploads', 'models', '1750759524871-best.pt'),
+        os.path.join(server_root, 'uploads', 'models', '1750759502008-last.pt')
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def _get_object_model():
+    global object_model, object_model_path
+
+    if object_model is not None:
+        return object_model
+
+    with object_model_lock:
+        if object_model is not None:
+            return object_model
+
+        model_path = _select_default_object_model_path()
+        if not model_path:
+            raise FileNotFoundError("Default object detection model not found in server/uploads/models")
+
+        from ultralytics import YOLO
+        object_model = YOLO(model_path)
+        object_model_path = model_path
+        logger.info(f"Object detection model loaded: {object_model_path}")
+        return object_model
+
+
+def _decode_image_bytes_to_bgr(image_bytes):
+    nparr = np.frombuffer(image_bytes, np.uint8)
+    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if frame is None:
+        raise ValueError("Failed to decode image")
+    return frame
+
+
+def _decode_data_url_to_bgr(data_url):
+    if not data_url:
+        raise ValueError("image_base64 is required")
+    if ',' in data_url:
+        data_url = data_url.split(',', 1)[1]
+    image_bytes = base64.b64decode(data_url)
+    return _decode_image_bytes_to_bgr(image_bytes)
+
+
+def _encode_bgr_to_jpeg_data_url(frame_bgr, quality=85):
+    ok, buffer = cv2.imencode(
+        '.jpg',
+        frame_bgr,
+        [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)]
+    )
+    if not ok:
+        raise ValueError("Failed to encode image")
+    encoded = base64.b64encode(buffer.tobytes()).decode('utf-8')
+    return f"data:image/jpeg;base64,{encoded}"
+
+
+def _get_face_cascade():
+    global face_cascade
+    if face_cascade is not None:
+        return face_cascade
+    with face_lock:
+        if face_cascade is not None:
+            return face_cascade
+        cascade_path = None
+        try:
+            cascade_path = os.path.join(cv2.data.haarcascades, 'haarcascade_frontalface_default.xml')
+        except Exception:
+            cascade_path = None
+        if not cascade_path or not os.path.exists(cascade_path):
+            raise FileNotFoundError("OpenCV haarcascade_frontalface_default.xml not found")
+        cascade = cv2.CascadeClassifier(cascade_path)
+        if cascade.empty():
+            raise RuntimeError("Failed to load OpenCV face cascade classifier")
+        face_cascade = cascade
+        return face_cascade
+
+
+def _run_face_person_detection(frame_bgr):
+    """
+    Safe fallback detector (no native HOG crash risk on some Windows builds):
+    - Detects faces, then expands them into approximate 'person' boxes.
+    """
+    cascade = _get_face_cascade()
+    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+    faces = cascade.detectMultiScale(
+        gray,
+        scaleFactor=1.1,
+        minNeighbors=5,
+        minSize=(30, 30)
+    )
+
+    h, w = frame_bgr.shape[:2]
+    detections = []
+    for (x, y, fw, fh) in faces:
+        x1 = max(0, int(x - 0.5 * fw))
+        y1 = max(0, int(y - 0.2 * fh))
+        x2 = min(w - 1, int(x + fw + 0.5 * fw))
+        y2 = min(h - 1, int(y + fh + 2.5 * fh))
+        detections.append({
+            'class_name': 'person',
+            'confidence': 0.5,
+            'bbox': {'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2}
+        })
+    return detections
+
+
+def _run_yolo_object_detection(frame_bgr, conf=0.25, imgsz=None):
+    model = _get_object_model()
+
+    with object_model_lock:
+        kwargs = {'conf': float(conf), 'verbose': False}
+        if imgsz is not None:
+            kwargs['imgsz'] = int(imgsz)
+        results_list = model(frame_bgr, **kwargs)
+
+    if not results_list:
+        return [], frame_bgr, model.names
+
+    result = results_list[0]
+    names = getattr(result, 'names', None) or getattr(model, 'names', {}) or {}
+
+    detections = []
+    annotated = frame_bgr.copy()
+
+    if result.boxes is None or len(result.boxes) == 0:
+        return detections, annotated, names
+
+    for box in result.boxes:
+        xyxy = box.xyxy[0].tolist()
+        x1, y1, x2, y2 = [int(round(v)) for v in xyxy]
+        confidence = float(box.conf[0].item()) if hasattr(box.conf[0], 'item') else float(box.conf[0])
+        class_id = int(box.cls[0].item()) if hasattr(box.cls[0], 'item') else int(box.cls[0])
+        class_name = str(names.get(class_id, str(class_id)))
+
+        detections.append({
+            'class_name': class_name,
+            'confidence': round(confidence, 4),
+            'bbox': {'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2}
+        })
+
+        color = (0, 0, 255) if class_name == 'person' else (0, 255, 0)
+        cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+        label = f"{class_name} {confidence:.2f}"
+        text_y = y1 - 8 if y1 - 8 > 10 else y1 + 20
+        cv2.putText(
+            annotated,
+            label,
+            (x1, text_y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            color,
+            2,
+            cv2.LINE_AA
+        )
+
+    return detections, annotated, names
+
+
+def _draw_detections(frame_bgr, detections):
+    annotated = frame_bgr.copy()
+    for d in detections:
+        bbox = d.get('bbox', {})
+        x1 = int(bbox.get('x1', 0))
+        y1 = int(bbox.get('y1', 0))
+        x2 = int(bbox.get('x2', 0))
+        y2 = int(bbox.get('y2', 0))
+        class_name = str(d.get('class_name', 'unknown'))
+        confidence = float(d.get('confidence', 0.0))
+        color = (0, 255, 255) if class_name == 'person' else (0, 255, 0)
+        cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+        label = f"{class_name} {confidence:.2f}"
+        text_y = y1 - 8 if y1 - 8 > 10 else y1 + 20
+        cv2.putText(
+            annotated,
+            label,
+            (x1, text_y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            color,
+            2,
+            cv2.LINE_AA
+        )
+    return annotated
+
+
+def _calculate_person_count(detections, names):
+    class_names = [str(v).strip().lower() for v in (names or {}).values()]
+    has_person_class = 'person' in class_names
+    if has_person_class:
+        return sum(1 for d in detections if str(d.get('class_name', '')).strip().lower() == 'person')
+    # For custom behavior models (e.g. memperhatikan/nguap/balikbadan),
+    # every detection still represents a detected human.
+    return len(detections)
 
 class YOLODetector:
     def __init__(self, model_path, confidence_threshold=0.5, iou_threshold=0.4, model_type=None):
@@ -491,6 +706,131 @@ def initialize_model():
             'message': f'Failed to initialize model: {str(e)}'
         }), 500
 
+@app.route('/api/detect/image', methods=['POST'])
+def detect_image():
+    try:
+        if 'image' not in request.files:
+            return jsonify({
+                'success': False,
+                'message': 'Field "image" is required (multipart/form-data)'
+            }), 400
+
+        file = request.files['image']
+        if not file or file.filename == '':
+            return jsonify({
+                'success': False,
+                'message': 'No image file provided'
+            }), 400
+
+        conf = request.form.get('conf', None)
+        imgsz = request.form.get('imgsz', None)
+        try:
+            conf = float(conf) if conf is not None else 0.25
+        except Exception:
+            conf = 0.25
+        try:
+            imgsz = int(imgsz) if imgsz is not None else None
+        except Exception:
+            imgsz = None
+
+        image_bytes = file.read()
+        frame = _decode_image_bytes_to_bgr(image_bytes)
+        detections, annotated, names = _run_yolo_object_detection(frame, conf=conf, imgsz=imgsz)
+        if len(detections) == 0:
+            fallback_people = _run_face_person_detection(frame)
+            if fallback_people:
+                detections = fallback_people
+                annotated = _draw_detections(frame, detections)
+        annotated_image = _encode_bgr_to_jpeg_data_url(annotated, quality=85)
+
+        person_count = _calculate_person_count(detections, names)
+
+        return jsonify({
+            'success': True,
+            'total_objects': len(detections),
+            'person_count': person_count,
+            'detections': detections,
+            'annotated_image': annotated_image
+        })
+    except Exception as e:
+        logger.error(f"Error processing image: {str(e)}")
+        return jsonify({
+            'success': False,
+            'message': f'Failed to process image: {str(e)}'
+        }), 500
+
+
+@app.route('/api/detect/frame', methods=['POST'])
+def detect_frame_fast():
+    try:
+        data = request.get_json() or {}
+        image_base64 = data.get('image_base64')
+        conf = data.get('conf', 0.25)
+        imgsz = data.get('imgsz', None)
+        include_annotated = data.get('include_annotated', True)
+        if isinstance(include_annotated, str):
+            include_annotated = include_annotated.strip().lower() not in ('0', 'false', 'no', 'off')
+        include_annotated = bool(include_annotated)
+        try:
+            conf = float(conf)
+        except Exception:
+            conf = 0.25
+        try:
+            imgsz = int(imgsz) if imgsz is not None else None
+        except Exception:
+            imgsz = None
+        image_len = len(image_base64) if isinstance(image_base64, str) else 0
+        logger.info(f"/api/detect/frame request: conf={conf} imgsz={imgsz} image_len={image_len}")
+
+        frame = _decode_data_url_to_bgr(image_base64)
+        logger.info(f"/api/detect/frame decoded: shape={getattr(frame, 'shape', None)}")
+
+        detections, annotated, names = _run_yolo_object_detection(frame, conf=conf, imgsz=imgsz)
+        logger.info(f"/api/detect/frame yolo: detections={len(detections)}")
+        if len(detections) == 0:
+            fallback_people = _run_face_person_detection(frame)
+            if fallback_people:
+                detections = fallback_people
+                annotated = _draw_detections(frame, detections)
+                logger.info(f"/api/detect/frame face_fallback: detections={len(detections)}")
+
+        person_count = _calculate_person_count(detections, names)
+
+        response = {
+            'success': True,
+            'total_objects': len(detections),
+            'person_count': person_count,
+            'detections': detections
+        }
+        if include_annotated:
+            response['annotated_image'] = _encode_bgr_to_jpeg_data_url(annotated, quality=80)
+        return jsonify(response)
+    except Exception as e:
+        logger.exception("Error processing frame")
+        return jsonify({
+            'success': False,
+            'message': f'Failed to process frame: {str(e)}'
+        }), 500
+
+
+@app.route('/api/model-info', methods=['GET'])
+def model_info():
+    try:
+        model = _get_object_model()
+        names = getattr(model, 'names', {}) or {}
+        num_classes = len(names)
+        return jsonify({
+            'success': True,
+            'names': names,
+            'num_classes': num_classes
+        })
+    except Exception as e:
+        logger.error(f"Error getting model info: {str(e)}")
+        return jsonify({
+            'success': False,
+            'message': f'Failed to get model info: {str(e)}'
+        }), 500
+
 @app.route('/api/detect-frame', methods=['POST'])
 def detect_frame():
     global current_model
@@ -720,11 +1060,20 @@ def analyze_gestures(detections):
 
 @app.route('/health', methods=['GET'])
 def health_check():
+    default_model_path = None
+    try:
+        default_model_path = _select_default_object_model_path()
+    except Exception:
+        default_model_path = None
+
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
         'model_loaded': current_model is not None,
-        'model_type': current_model.model_type if current_model else None
+        'model_type': current_model.model_type if current_model else None,
+        'object_model_loaded': object_model is not None,
+        'object_model_path': object_model_path,
+        'object_model_default_path': default_model_path
     })
 
 @app.errorhandler(404)
@@ -739,6 +1088,9 @@ if __name__ == '__main__':
     logger.info("Starting Flask server...")
     logger.info("Available endpoints:")
     logger.info("  POST /api/initialize-model")
+    logger.info("  POST /api/detect/image")
+    logger.info("  POST /api/detect/frame")
+    logger.info("  GET  /api/model-info")
     logger.info("  POST /api/detect-frame")
     logger.info("  GET  /api/model-status")
     logger.info("  POST /api/stop-model")

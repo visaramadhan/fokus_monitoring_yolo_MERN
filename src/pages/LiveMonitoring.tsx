@@ -26,8 +26,8 @@ import {
 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 import axios from 'axios';
-import toast from 'react-hot-toast';
 import { useAuth } from '../contexts/AuthContext';
+import { useStatusModal } from '../contexts/StatusModalContext';
 
 interface SeatPosition {
   seat_id: number;
@@ -57,6 +57,7 @@ interface DetectionData {
   yawningCount: number;
   writingCount: number;
   focusPercentage: number;
+  label_counts?: Record<string, number>;
   seatData: SeatPosition[];
 }
 
@@ -99,6 +100,20 @@ interface Schedule {
   status: string;
 }
 
+interface MataKuliah {
+  _id: string;
+  nama: string;
+  kode: string;
+  kelas: string[];
+}
+
+interface UserOption {
+  _id: string;
+  role: string;
+  nama_lengkap?: string;
+  username?: string;
+}
+
 interface ModelFile {
   name: string;
   path: string;
@@ -106,16 +121,44 @@ interface ModelFile {
   uploadedAt: string;
 }
 
+interface YoloDetection {
+  class_name: string;
+  confidence: number;
+  bbox: { x1: number; y1: number; x2: number; y2: number };
+}
+
+interface DetectionRecord {
+  id: string;
+  timestamp: string;
+  elapsedTime: string;
+  totalDetections: number;
+  focusedCount: number;
+  notFocusedCount: number;
+  yawningCount: number;
+  chattingCount: number;
+  focusPercentage: number;
+  summary: string;
+}
+
 export default function LiveMonitoring() {
-  useAuth(); // Only initialize auth context without destructuring unused user
+  const { user } = useAuth();
+  const { showSuccess, showError } = useStatusModal();
   
   // Session Management
   const [isMonitoring, setIsMonitoring] = useState(false);
   const [currentSession, setCurrentSession] = useState<LiveSession | null>(null);
   const [detectionData, setDetectionData] = useState<DetectionData[]>([]);
+  const [detectionRecords, setDetectionRecords] = useState<DetectionRecord[]>([]);
   
   // Configuration
   const [selectedSchedule, setSelectedSchedule] = useState('');
+  const [activeSchedule, setActiveSchedule] = useState<Schedule | null>(null);
+  const [selectedDosenId, setSelectedDosenId] = useState('');
+  const [dosenOptions, setDosenOptions] = useState<UserOption[]>([]);
+  const [subjects, setSubjects] = useState<MataKuliah[]>([]);
+  const [loadingSubjects, setLoadingSubjects] = useState(false);
+  const [selectedSubjectId, setSelectedSubjectId] = useState('');
+  const [selectedClassName, setSelectedClassName] = useState('');
   const [sessionName, setSessionName] = useState('');
   const [showSettings, setShowSettings] = useState(false);
   const [showCameraSettings, setShowCameraSettings] = useState(false);
@@ -145,16 +188,63 @@ export default function LiveMonitoring() {
   const [flaskStatus, setFlaskStatus] = useState<'disconnected' | 'connected' | 'error'>('disconnected');
   const [modelStatus, setModelStatus] = useState<'inactive' | 'loading' | 'active' | 'error'>('inactive');
   const [flaskError, setFlaskError] = useState<string>('');
-  const [detectionModelType, setDetectionModelType] = useState<'model_1' | 'model_2'>('model_1'); // Model 1: tidur, main hp, normal | Model 2: nguap, balik_badan, normal
+  const [annotatedImage, setAnnotatedImage] = useState<string>('');
+  const [yoloDetections, setYoloDetections] = useState<YoloDetection[]>([]);
+  const [modelInfo, setModelInfo] = useState<{ names: Record<string, string>; num_classes: number } | null>(null);
+  const [detectionConf, setDetectionConf] = useState(0.5);
+  const [detectionWidth, setDetectionWidth] = useState(640);
+  const [detectionJpegQuality, setDetectionJpegQuality] = useState(0.72);
+  const [recordIntervalSec, setRecordIntervalSec] = useState(3);
+  const [lastInferenceMs, setLastInferenceMs] = useState<number | null>(null);
+  const [isTestingDetection, setIsTestingDetection] = useState(false);
+
+  const selectedSubject = subjects.find((s) => s._id === selectedSubjectId) || null;
   
   // Refs
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const detectionIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const detectionIntervalRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isProcessingRef = useRef(false);
+  const lastBackendSaveAtRef = useRef(0);
+  const sessionStartedAtRef = useRef<number | null>(null);
+  const lastRecordAtRef = useRef(0);
+  const isMonitoringRef = useRef(false);
+  const captureCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const lastCaptureDimsRef = useRef<{ width: number; height: number } | null>(null);
+  const detectionMemoryRef = useRef<Map<string, { det: YoloDetection; lastSeen: number }>>(new Map());
+  const requestDrawRef = useRef<number | null>(null);
+
+  const todayStr = () => {
+    const d = new Date();
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  };
+
+  const isToday = (dateValue: any) => {
+    const d = new Date(dateValue);
+    if (Number.isNaN(d.getTime())) return false;
+    const now = new Date();
+    return (
+      d.getFullYear() === now.getFullYear() &&
+      d.getMonth() === now.getMonth() &&
+      d.getDate() === now.getDate()
+    );
+  };
+
+  const formatElapsed = (totalSeconds: number) => {
+    const m = Math.floor(totalSeconds / 60);
+    const s = totalSeconds % 60;
+    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  };
+
+  useEffect(() => {
+    isMonitoringRef.current = isMonitoring;
+  }, [isMonitoring]);
 
   useEffect(() => {
     getCameraDevices();
-    fetchSchedules();
     fetchModels();
     checkFlaskStatus();
     
@@ -163,10 +253,52 @@ export default function LiveMonitoring() {
         cameraStream.getTracks().forEach(track => track.stop());
       }
       if (detectionIntervalRef.current) {
-        clearInterval(detectionIntervalRef.current);
+        clearTimeout(detectionIntervalRef.current);
       }
     };
   }, []);
+
+  useEffect(() => {
+    const fetchDosen = async () => {
+      if (user?.role !== 'admin') return;
+      try {
+        const res = await axios.get('/api/users');
+        const dosen = (res.data || []).filter((u: UserOption) => u.role === 'dosen');
+        setDosenOptions(dosen);
+      } catch (error) {
+        showError('Gagal', 'Gagal memuat data dosen.');
+      }
+    };
+    fetchDosen();
+  }, [user?.role]);
+
+  useEffect(() => {
+    const fetchSubjects = async () => {
+      try {
+        setLoadingSubjects(true);
+        if (user?.role === 'admin' && !selectedDosenId) {
+          setSubjects([]);
+          setSelectedSubjectId('');
+          setSelectedClassName('');
+          setSelectedSchedule('');
+          return;
+        }
+        const params: any = {};
+        if (user?.role === 'admin' && selectedDosenId) {
+          params.dosen_id = selectedDosenId;
+        }
+        const res = await axios.get('/api/mata-kuliah', { params });
+        setSubjects(res.data || []);
+      } catch (error) {
+        showError('Gagal', 'Gagal mengambil data mata kuliah.');
+      } finally {
+        setLoadingSubjects(false);
+      }
+    };
+    if (user?.role) {
+      fetchSubjects();
+    }
+  }, [user?.role, selectedDosenId]);
 
   useEffect(() => {
     if (isMonitoring) {
@@ -191,19 +323,43 @@ export default function LiveMonitoring() {
         setSelectedCamera(videoDevices[0].deviceId);
       }
     } catch (error) {
-      toast.error('Failed to get camera devices');
+      showError('Gagal', 'Gagal mengambil daftar kamera.');
       console.error('Camera enumeration error:', error);
     }
   };
 
   const fetchSchedules = async () => {
     try {
-      const response = await axios.get('/api/jadwal');
-      setSchedules(response.data);
+      if (user?.role === 'admin' && !selectedDosenId) {
+        setSchedules([]);
+        return;
+      }
+      if (!selectedSubjectId || !selectedClassName) {
+        setSchedules([]);
+        return;
+      }
+      const params: any = {
+        status: 'available',
+        date: todayStr(),
+        mata_kuliah_id: selectedSubjectId,
+        kelas: selectedClassName
+      };
+      if (user?.role === 'admin' && selectedDosenId) {
+        params.dosen_id = selectedDosenId;
+      }
+      const response = await axios.get('/api/jadwal', { params });
+      setSchedules(response.data || []);
     } catch (error) {
       console.error('Error fetching schedules:', error);
+      showError('Gagal', 'Gagal mengambil data schedule.');
     }
   };
+
+  useEffect(() => {
+    if (user?.role) {
+      fetchSchedules();
+    }
+  }, [user?.role, selectedDosenId, selectedSubjectId, selectedClassName]);
 
   const fetchModels = async () => {
     try {
@@ -212,52 +368,40 @@ export default function LiveMonitoring() {
       // No need to set selectedModel as we're using detection_model_type instead
     } catch (error) {
       console.error('Error fetching models:', error);
-      toast.error('Failed to fetch available models');
+      showError('Gagal', 'Gagal mengambil daftar model.');
     }
   };
 
   const checkFlaskStatus = async () => {
     try {
-      const response = await axios.get('/api/flask/status');
+      await axios.get('/flask/health', { timeout: 5000 });
       setFlaskStatus('connected');
       setFlaskError('');
-      
-      // Check current model type
+
+      setModelStatus('loading');
       try {
-        const modelTypeResponse = await axios.get('/api/flask/model-type');
-        if (modelTypeResponse.data.success && modelTypeResponse.data.model_type) {
-          setDetectionModelType(modelTypeResponse.data.model_type);
+        const infoResponse = await axios.get('/flask/api/model-info');
+        if (infoResponse.data?.success) {
+          setModelInfo({
+            names: infoResponse.data.names || {},
+            num_classes: infoResponse.data.num_classes || 0
+          });
+          setModelStatus('active');
+          setFlaskError('');
+        } else {
+          setModelStatus('inactive');
+          setFlaskError(infoResponse.data?.message || 'Model info not available');
         }
-      } catch (modelTypeError) {
-        console.error('Error getting model type:', modelTypeError);
+      } catch (infoError: any) {
+        setModelStatus('inactive');
+        const msg = infoError?.response?.data?.message || infoError?.message || 'Failed to get model info';
+        setFlaskError(msg);
+        console.error('Error getting model info:', infoError);
       }
     } catch (error) {
       setFlaskStatus('error');
       setFlaskError('Flask server not responding. Please ensure Flask server is running on port 5001.');
       console.error('Flask status check failed:', error);
-    }
-  };
-  
-  const setModelType = async (modelType: 'model_1' | 'model_2') => {
-    try {
-      setModelStatus('loading');
-      const response = await axios.post('/api/flask/set-model-type', { model_type: modelType });
-      if (response.data.success) {
-        setDetectionModelType(modelType);
-        toast.success(`Model type set to ${modelType}`);
-        setModelStatus('active');
-      } else {
-        const errorMessage = response.data.message || 'Failed to set model type';
-        setFlaskError(errorMessage);
-        toast.error(errorMessage);
-        setModelStatus('error');
-      }
-    } catch (error: any) {
-      const errorMessage = error.response?.data?.message || error.message || 'Failed to set model type';
-      console.error('Error setting model type:', error);
-      setFlaskError(errorMessage);
-      toast.error(errorMessage);
-      setModelStatus('error');
     }
   };
 
@@ -280,11 +424,14 @@ export default function LiveMonitoring() {
       setCameraStream(stream);
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        syncCanvasSize();
+        await videoRef.current.play().catch(() => {});
+        requestAnimationFrame(() => {
+          syncCanvasSize();
+        });
       }
-      toast.success('Camera started successfully');
+      showSuccess('Berhasil', 'Kamera berhasil dimulai.');
     } catch (error) {
-      toast.error('Failed to start camera');
+      showError('Gagal', 'Gagal memulai kamera.');
       console.error('Camera start error:', error);
     }
   };
@@ -294,40 +441,7 @@ export default function LiveMonitoring() {
       cameraStream.getTracks().forEach(track => track.stop());
       setCameraStream(null);
     }
-    toast.success('Camera stopped');
-  };
-
-  // Flask Model Functions
-  const initializeFlaskModel = async () => {
-    setModelStatus('loading');
-    try {
-      // Ensure we're using the correct parameters for the API
-      const response = await axios.post('/api/flask/initialize-model', {
-        detection_model_type: detectionModelType,
-        confidence_threshold: 0.5,
-        iou_threshold: 0.4
-      });
-
-      if (response.data.success) {
-        setModelStatus('active');
-        setFlaskError(''); // Clear any previous errors
-        toast.success('Model initialized successfully');
-        return true;
-      } else {
-        const errorMessage = response.data.message || 'Model initialization failed';
-        setFlaskError(errorMessage);
-        setModelStatus('error');
-        toast.error(errorMessage);
-        return false;
-      }
-    } catch (error: any) {
-      setModelStatus('error');
-      const errorMessage = error.response?.data?.message || error.message || 'Failed to initialize model';
-      setFlaskError(errorMessage);
-      toast.error(`Model initialization failed: ${errorMessage}`);
-      console.error('Flask model initialization error:', error);
-      return false;
-    }
+    showSuccess('Berhasil', 'Kamera dihentikan.');
   };
 
   // Seat Labelling Functions
@@ -400,49 +514,45 @@ export default function LiveMonitoring() {
   const handleCanvasMouseUp = (e?: React.MouseEvent<HTMLCanvasElement>) => {
     if (!isDrawing || !currentSeat || !isLabellingMode) return;
 
-    // Only create a seat if the size is reasonable
-    if (Math.abs(currentSeat.width || 0) > 20 && Math.abs(currentSeat.height || 0) > 20) {
-      const studentId = prompt('Enter Student ID (optional):', '');
-      
-      // Ensure width and height are positive
-      const width = Math.abs(currentSeat.width || 0);
-      const height = Math.abs(currentSeat.height || 0);
-      
-      // Calculate correct position (handle negative width/height cases)
-      let x = currentSeat.x || 0;
-      let y = currentSeat.y || 0;
-      
-      if ((currentSeat.width || 0) < 0) {
-        x += (currentSeat.width || 0);
-      }
-      
-      if ((currentSeat.height || 0) < 0) {
-        y += (currentSeat.height || 0);
-      }
-      
-      const newSeat: SeatPosition = {
-        seat_id: seatPositions.length + 1,
-        x,
-        y,
-        width,
-        height,
-        is_occupied: false,
-        student_id: studentId || null,
-        face_detected: false,
-        gesture_type: 'unknown',
-        confidence: 0,
-        focus_start_time: null,
-        total_focus_duration: 0,
-        attendance_time: null,
-        departure_time: null
-      };
-
-      setSeatPositions([...seatPositions, newSeat]);
-      toast.success(`Seat ${newSeat.seat_id} added${studentId ? ` with ID: ${studentId}` : ''}`);
-    } else if (isDrawing) {
-      // If drawing was too small, inform the user
-      toast('Drawing too small - try again with a larger area', { icon: 'ℹ️' });
+    const width = Math.abs(currentSeat.width || 0);
+    const height = Math.abs(currentSeat.height || 0);
+    if (width < 1 || height < 1) {
+      setIsDrawing(false);
+      setCurrentSeat(null);
+      drawCanvas();
+      return;
     }
+
+    let x = currentSeat.x || 0;
+    let y = currentSeat.y || 0;
+
+    if ((currentSeat.width || 0) < 0) {
+      x += (currentSeat.width || 0);
+    }
+
+    if ((currentSeat.height || 0) < 0) {
+      y += (currentSeat.height || 0);
+    }
+
+    const newSeat: SeatPosition = {
+      seat_id: seatPositions.length + 1,
+      x,
+      y,
+      width,
+      height,
+      is_occupied: false,
+      student_id: null,
+      face_detected: false,
+      gesture_type: 'unknown',
+      confidence: 0,
+      focus_start_time: null,
+      total_focus_duration: 0,
+      attendance_time: null,
+      departure_time: null
+    };
+
+    setSeatPositions([...seatPositions, newSeat]);
+    showSuccess('Berhasil', `Seat ${newSeat.seat_id} ditambahkan.`);
 
     // Reset drawing state
     setIsDrawing(false);
@@ -458,7 +568,7 @@ export default function LiveMonitoring() {
 
     // Ensure we have camera stream before generating grid
     if (!cameraStream) {
-      toast.error('Please start camera first');
+      showError('Tidak Bisa', 'Mulai kamera terlebih dahulu.');
       return;
     }
 
@@ -519,23 +629,31 @@ export default function LiveMonitoring() {
     }
 
     setSeatPositions(newSeats);
-    toast.success(`Generated ${newSeats.length} seat positions in a ${rows}x${cols} grid`);
+    showSuccess('Berhasil', `Berhasil generate ${newSeats.length} seat (${rows}x${cols}).`);
     
     // Force redraw canvas to show the grid
-    drawCanvas();
+    requestDraw();
     
     // If we're in monitoring mode, start detection
-    if (isMonitoring && !isLabellingMode && currentSession?._id) {
-      startFlaskDetection(currentSession._id);
+    if (isMonitoring && !isLabellingMode && currentSession?.sessionId) {
+      startFlaskDetection(currentSession.sessionId);
     }
   };
 
   const clearAllSeats = () => {
     setSeatPositions([]);
-    toast.success('All seats cleared');
+    showSuccess('Berhasil', 'Semua seat berhasil dihapus.');
   };
 
   // Canvas Drawing
+  const requestDraw = () => {
+    if (requestDrawRef.current !== null) return;
+    requestDrawRef.current = requestAnimationFrame(() => {
+      requestDrawRef.current = null;
+      drawCanvas();
+    });
+  };
+
   const drawCanvas = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -575,10 +693,10 @@ export default function LiveMonitoring() {
       let strokeColor = '#3B82F6'; // Default blue
       let fillColor = 'rgba(59, 130, 246, 0.2)'; // Slightly more visible
       
-      if (seat.face_detected && seat.gesture_type === 'focused') {
+      if (seat.face_detected && (seat.gesture_type === 'focused' || seat.gesture_type === 'memperhatikan')) {
         strokeColor = '#10B981'; // Green for focused
         fillColor = 'rgba(16, 185, 129, 0.3)';
-      } else if (seat.face_detected && seat.gesture_type !== 'focused') {
+      } else if (seat.face_detected && seat.gesture_type !== 'focused' && seat.gesture_type !== 'memperhatikan') {
         strokeColor = '#F59E0B'; // Orange for detected but not focused
         fillColor = 'rgba(245, 158, 11, 0.3)';
       } else if (seat.is_occupied) {
@@ -586,23 +704,11 @@ export default function LiveMonitoring() {
         fillColor = 'rgba(239, 68, 68, 0.3)';
       }
 
-      // Draw seat with shadow for better visibility
-      ctx.shadowColor = 'rgba(0, 0, 0, 0.3)';
-      ctx.shadowBlur = 5;
-      ctx.shadowOffsetX = 2;
-      ctx.shadowOffsetY = 2;
-      
       ctx.strokeStyle = strokeColor;
       ctx.fillStyle = fillColor;
-      ctx.lineWidth = 3;
+      ctx.lineWidth = 2;
       ctx.fillRect(seat.x, seat.y, seat.width, seat.height);
       ctx.strokeRect(seat.x, seat.y, seat.width, seat.height);
-      
-      // Reset shadow
-      ctx.shadowColor = 'transparent';
-      ctx.shadowBlur = 0;
-      ctx.shadowOffsetX = 0;
-      ctx.shadowOffsetY = 0;
       
       // Draw seat label
       ctx.fillStyle = strokeColor;
@@ -623,6 +729,39 @@ export default function LiveMonitoring() {
         ctx.fillText(`${minutes}:${seconds.toString().padStart(2, '0')}`, seat.x + 5, seat.y + seat.height - 8);
       }
     });
+
+    if (isMonitoring && yoloDetections.length > 0) {
+      for (const det of yoloDetections) {
+        const label = String(det.class_name || '');
+        const norm = label.trim().toLowerCase();
+        const color =
+          norm === 'memperhatikan' || norm === 'focused'
+            ? '#22c55e'
+            : norm === 'nguap' || norm === 'yawning'
+              ? '#f59e0b'
+              : norm === 'balikbadan' || norm === 'looking_away' || norm === 'chatting'
+                ? '#ef4444'
+                : '#3b82f6';
+
+        const x1 = det.bbox.x1;
+        const y1 = det.bbox.y1;
+        const w = det.bbox.x2 - det.bbox.x1;
+        const h = det.bbox.y2 - det.bbox.y1;
+
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x1, y1, w, h);
+
+        const pct = Math.round((det.confidence || 0) * 100);
+        const text = `${label} ${pct}%`;
+        ctx.font = 'bold 13px Arial';
+        const tw = ctx.measureText(text).width;
+        ctx.fillStyle = color;
+        ctx.fillRect(x1, y1 - 20, tw + 8, 20);
+        ctx.fillStyle = '#000000';
+        ctx.fillText(text, x1 + 4, y1 - 5);
+      }
+    }
 
     // Draw current drawing seat with improved visibility
     if (isDrawing && currentSeat && isLabellingMode) {
@@ -680,25 +819,23 @@ export default function LiveMonitoring() {
       canvas.style.top = '0';
       canvas.style.left = '0';
       canvas.style.zIndex = '10'; // Ensure canvas is above video
-      canvas.style.pointerEvents = 'auto'; // Make sure canvas receives mouse events
+      canvas.style.pointerEvents = isLabellingMode || isDrawing ? 'auto' : 'none';
       
-      // Force immediate redraw
-      drawCanvas();
-      
-      console.log('Canvas synced:', canvas.width, 'x', canvas.height);
+      requestDraw();
     }
   };
 
   useEffect(() => {
     if (cameraStream) {
-      // Ensure canvas is properly sized when camera starts
       syncCanvasSize();
-      
-      // Set up interval for continuous canvas redrawing
-      const interval = setInterval(drawCanvas, 100);
-      return () => clearInterval(interval);
     }
-  }, [cameraStream, seatPositions, currentSeat, isDrawing, isLabellingMode]);
+  }, [cameraStream]);
+
+  useEffect(() => {
+    if (cameraStream) {
+      requestDraw();
+    }
+  }, [cameraStream, seatPositions, currentSeat, isDrawing, isLabellingMode, isMonitoring, yoloDetections]);
   
   // Add effect to handle window resize for responsive canvas
   useEffect(() => {
@@ -709,12 +846,7 @@ export default function LiveMonitoring() {
   // Monitoring Functions
   const startMonitoring = async () => {
     if (!selectedSchedule) {
-      toast.error('Please select a schedule');
-      return;
-    }
-
-    if (seatPositions.length === 0) {
-      toast.error('Please add seat positions before starting monitoring');
+      showError('Tidak Bisa Mulai', 'Pilih schedule terlebih dahulu.');
       return;
     }
 
@@ -723,36 +855,50 @@ export default function LiveMonitoring() {
         await startCamera();
       }
 
-      // Initialize Flask model
-      const modelInitialized = await initializeFlaskModel();
-      if (!modelInitialized) {
+      const schedule = schedules.find(s => s._id === selectedSchedule);
+      if (!schedule) {
+        showError('Tidak Bisa Mulai', 'Schedule tidak ditemukan.');
+        return;
+      }
+      setActiveSchedule(schedule);
+      if (!isToday(schedule.tanggal)) {
+        showError('Tidak Bisa Mulai', 'Schedule hanya bisa dilakukan pada tanggal yang dijadwalkan.');
+        return;
+      }
+      if (user?.role === 'admin' && !selectedDosenId) {
+        showError('Tidak Bisa Mulai', 'Pilih dosen pengampu terlebih dahulu.');
         return;
       }
 
-      const schedule = schedules.find(s => s._id === selectedSchedule);
-      if (!schedule) {
-        toast.error('Selected schedule not found');
-        return;
-      }
+      await axios.put(`/api/jadwal/${selectedSchedule}`, { status: 'ongoing' });
+      await fetchSchedules();
+
+      const toId = (value: any) => (typeof value === 'string' ? value : value?._id);
 
       const response = await axios.post('/api/live-monitoring/start', {
         kelas: schedule.kelas,
-        mata_kuliah_id: schedule.mata_kuliah_id,
+        mata_kuliah_id: toId(schedule.mata_kuliah_id) || schedule.mata_kuliah_id,
         mata_kuliah: schedule.mata_kuliah,
         sessionName: sessionName || `${schedule.mata_kuliah} - ${schedule.kelas}`,
-        seatPositions,
-        detection_model_type: detectionModelType
+        ...(user?.role === 'admin' ? { dosen_id: selectedDosenId } : {})
       });
 
       setCurrentSession(response.data);
       setIsMonitoring(true);
       setIsLabellingMode(false);
-      toast.success('Live monitoring started');
+      setDetectionData([]);
+      setDetectionRecords([]);
+      setAnnotatedImage('');
+      setYoloDetections([]);
+      detectionMemoryRef.current.clear();
+      sessionStartedAtRef.current = Date.now();
+      lastRecordAtRef.current = 0;
+      showSuccess('Berhasil', 'Live monitoring dimulai.');
 
       // Start face detection with Flask
       startFlaskDetection(response.data.sessionId);
     } catch (error) {
-      toast.error('Failed to start monitoring');
+      showError('Gagal Memulai', 'Gagal memulai live monitoring.');
       console.error('Start monitoring error:', error);
     }
   };
@@ -761,19 +907,28 @@ export default function LiveMonitoring() {
     if (!currentSession) return;
 
     try {
+      setIsMonitoring(false);
+      isMonitoringRef.current = false;
       if (detectionIntervalRef.current) {
-        clearInterval(detectionIntervalRef.current);
+        clearTimeout(detectionIntervalRef.current);
       }
 
       await axios.post(`/api/live-monitoring/stop/${currentSession.sessionId}`);
       
       // Export data automatically
-      await exportSessionData();
+      const exported = await exportSessionData();
       
       setIsMonitoring(false);
       setCurrentSession(null);
+      setActiveSchedule(null);
       setDetectionData([]);
+      setDetectionRecords([]);
+      sessionStartedAtRef.current = null;
+      lastRecordAtRef.current = 0;
       setModelStatus('inactive');
+      setAnnotatedImage('');
+      setYoloDetections([]);
+      detectionMemoryRef.current.clear();
       
       // Reset seat focus data
       setSeatPositions(prev => prev.map(seat => ({
@@ -785,9 +940,13 @@ export default function LiveMonitoring() {
         total_focus_duration: 0
       })));
       
-      toast.success('Live monitoring stopped and data exported');
+      if (exported) {
+        showSuccess('Berhasil', 'Live monitoring berhenti dan data berhasil diexport.');
+      } else {
+        showError('Export Gagal', 'Live monitoring berhenti, tetapi export gagal. Coba export ulang dari halaman records.');
+      }
     } catch (error) {
-      toast.error('Failed to stop monitoring');
+      showError('Gagal Menghentikan', 'Gagal menghentikan live monitoring.');
       console.error('Stop monitoring error:', error);
     }
   };
@@ -795,29 +954,127 @@ export default function LiveMonitoring() {
   const startFlaskDetection = (sessionId: string) => {
     if (!sessionId) {
       console.error('Session ID is required for detection');
-      toast.error('Missing session ID for detection');
+      showError('Deteksi Tidak Bisa Dimulai', 'Session ID kosong.');
       return;
     }
     
-    // Set detection interval to run every 60 seconds (1 minute) exactly as requested
-    const ONE_MINUTE = 60 * 1000; // 60 seconds in milliseconds
-    
     // Clear any existing interval first
     if (detectionIntervalRef.current) {
-      clearInterval(detectionIntervalRef.current);
+      clearTimeout(detectionIntervalRef.current);
     }
     
     // Run detection once immediately when monitoring starts
     runDetection(sessionId);
     
-    // Then set up interval for every minute
-    detectionIntervalRef.current = setInterval(() => {
-      runDetection(sessionId);
-    }, ONE_MINUTE);
+    const intervalMs = 250;
+    const tick = async () => {
+      if (!isMonitoringRef.current) return;
+      await runDetection(sessionId);
+      if (!isMonitoringRef.current) return;
+      detectionIntervalRef.current = setTimeout(tick, intervalMs);
+    };
+    detectionIntervalRef.current = setTimeout(tick, intervalMs);
     
     console.log(`Detection started for session: ${sessionId}`);
   };
+
+  useEffect(() => {
+    if (isMonitoring && currentSession?.sessionId) {
+      startFlaskDetection(currentSession.sessionId);
+    }
+  }, [isMonitoring, currentSession?.sessionId]);
   
+  const captureFrameDataUrl = async (opts?: { targetWidth?: number; targetHeight?: number; quality?: number }) => {
+    const video = videoRef.current;
+    if (!video) return null;
+
+    const videoWidth = video.videoWidth;
+    const videoHeight = video.videoHeight;
+    if (!videoWidth || !videoHeight) return null;
+
+    const canvas = captureCanvasRef.current || document.createElement('canvas');
+    captureCanvasRef.current = canvas;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+
+    const quality = Math.max(0.1, Math.min(0.95, opts?.quality ?? detectionJpegQuality));
+    const targetWidth = Math.max(320, Math.min(1920, Math.floor(opts?.targetWidth ?? detectionWidth)));
+    const targetHeight = Math.max(
+      1,
+      Math.floor(
+        opts?.targetHeight ??
+          Math.round(videoHeight * (targetWidth / videoWidth))
+      )
+    );
+
+    canvas.width = targetWidth;
+    canvas.height = targetHeight;
+    lastCaptureDimsRef.current = { width: targetWidth, height: targetHeight };
+    ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
+
+    const blob: Blob | null = await new Promise((resolve) => {
+      canvas.toBlob((b) => resolve(b), 'image/jpeg', quality);
+    });
+    if (!blob) return null;
+
+    const frameData: string = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(new Error('Failed to read frame blob'));
+      reader.readAsDataURL(blob);
+    });
+    if (!frameData || frameData === 'data:,') return null;
+    return frameData;
+  };
+
+  const testDetectionOnce = async () => {
+    if (isTestingDetection) return;
+    setIsTestingDetection(true);
+    try {
+      if (!cameraStream) {
+        await startCamera();
+      }
+      const frameData = await captureFrameDataUrl({ targetWidth: detectionWidth, quality: detectionJpegQuality });
+      if (!frameData) {
+        showError('Tidak Bisa', 'Kamera belum siap. Tunggu 1-2 detik lalu coba lagi.');
+        return;
+      }
+
+      const startTime = Date.now();
+      const response = await axios.post('/flask/api/detect/frame', {
+        image_base64: frameData,
+        conf: detectionConf,
+        imgsz: detectionWidth,
+        include_annotated: true
+      });
+
+      if (!response.data?.success) {
+        const msg = response.data?.message || 'Unknown error';
+        setModelStatus('error');
+        setFlaskError(msg);
+        showError('Gagal', msg);
+        return;
+      }
+
+      const detections: YoloDetection[] = Array.isArray(response.data.detections) ? response.data.detections : [];
+      setYoloDetections(detections);
+      if (typeof response.data.annotated_image === 'string') {
+        setAnnotatedImage(response.data.annotated_image);
+      }
+      setModelStatus('active');
+      setFlaskError('');
+      setLastInferenceMs(Date.now() - startTime);
+      showSuccess('Berhasil', `Detections: ${detections.length}`);
+    } catch (error: any) {
+      const errorMessage = error.response?.data?.message || error.message || 'Unknown error';
+      setModelStatus('error');
+      setFlaskError(errorMessage);
+      showError('Gagal', errorMessage);
+    } finally {
+      setIsTestingDetection(false);
+    }
+  };
+
   // Separate function to run detection for better organization
   const runDetection = async (sessionId: string) => {
     if (!sessionId) {
@@ -825,149 +1082,287 @@ export default function LiveMonitoring() {
       return;
     }
     
-    if (!isMonitoring || !videoRef.current) {
-      if (detectionIntervalRef.current) {
-        clearInterval(detectionIntervalRef.current);
-      }
-      return;
-    }
+    if (!isMonitoringRef.current || !videoRef.current) return;
 
     try {
-      // Capture frame from video
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      if (!ctx) {
-        console.error('Failed to get canvas context');
-        return;
-      }
+      if (isProcessingRef.current) return;
+      isProcessingRef.current = true;
 
-      canvas.width = videoRef.current.videoWidth;
-      canvas.height = videoRef.current.videoHeight;
-      ctx.drawImage(videoRef.current, 0, 0);
-      
-      const frameData = canvas.toDataURL('image/jpeg', 0.8);
-      if (!frameData || frameData === 'data:,') {
-        console.error('Failed to capture frame data');
-        return;
-      }
+      const normalizeLabel = (value: unknown) => String(value ?? '').trim().toLowerCase();
 
-      // Ensure we have valid seat positions
-      if (!seatPositions || seatPositions.length === 0) {
-        console.error('No seat positions defined for detection');
-        return;
-      }
+      const frameData = await captureFrameDataUrl({ targetWidth: detectionWidth, quality: detectionJpegQuality });
+      if (!frameData) return;
 
-      // Send frame to Flask for detection
-      const response = await axios.post('/api/flask/detect-frame', {
-        frameData,
-        seatPositions,
-        sessionId
+      const startTime = Date.now();
+      const response = await axios.post('/flask/api/detect/frame', {
+        image_base64: frameData,
+        conf: detectionConf,
+        imgsz: detectionWidth,
+        include_annotated: false
       });
-      
-      // Log detection time
-      const detectionTime = new Date().toLocaleTimeString();
-      console.log('Detection performed at:', detectionTime);
-      toast.success(`Detection performed at ${detectionTime}`, { duration: 2000 });
 
-      if (response.data.success) {
-        const updatedSeats = response.data.updated_seats;
-        if (!updatedSeats || !Array.isArray(updatedSeats)) {
-          console.error('Invalid seat data received from detection API');
-          return;
+      if (!response.data?.success) {
+        const msg = response.data?.message || 'Unknown error';
+        setModelStatus('error');
+        setFlaskError(msg);
+        console.error('Detection failed:', msg);
+        return;
+      }
+
+      const rawDetections: YoloDetection[] = Array.isArray(response.data.detections) ? response.data.detections : [];
+
+      const nowMs = Date.now();
+      const memory = detectionMemoryRef.current;
+      const keyForDet = (d: YoloDetection) => {
+        const q = (n: number, step: number) => Math.round(n / step) * step;
+        const b = d.bbox;
+        const x = q(b.x1, 24);
+        const y = q(b.y1, 24);
+        const w = q(b.x2 - b.x1, 24);
+        const h = q(b.y2 - b.y1, 24);
+        return `${normalizeLabel(d.class_name)}:${x}:${y}:${w}:${h}`;
+      };
+
+      for (const det of rawDetections) {
+        memory.set(keyForDet(det), { det, lastSeen: nowMs });
+      }
+
+      for (const [key, value] of memory.entries()) {
+        if (nowMs - value.lastSeen > 500) {
+          memory.delete(key);
         }
-        
-        const currentTime = Date.now();
+      }
 
-        // Update seat positions with detection results
-        const newSeats = updatedSeats.map((seat: any) => {
-          const existingSeat = seatPositions.find(s => s.seat_id === seat.seat_id);
-          if (!existingSeat) {
-            console.warn(`Seat with ID ${seat.seat_id} not found in existing seats`);
-            return seat; // Return the new seat data as is
+      const smoothedDetections = Array.from(memory.values()).map(v => v.det);
+      setYoloDetections(smoothedDetections);
+
+      const overlayCanvas = canvasRef.current;
+      const captureDims = lastCaptureDimsRef.current;
+      const scaleX = overlayCanvas && captureDims?.width ? overlayCanvas.width / captureDims.width : 1;
+      const scaleY = overlayCanvas && captureDims?.height ? overlayCanvas.height / captureDims.height : 1;
+
+      const scaledDetections = smoothedDetections.map(d => ({
+        ...d,
+        bbox: {
+          x1: d.bbox.x1 * scaleX,
+          y1: d.bbox.y1 * scaleY,
+          x2: d.bbox.x2 * scaleX,
+          y2: d.bbox.y2 * scaleY
+        }
+      }));
+
+      const modelLabelSet = new Set(Object.values(modelInfo?.names ?? {}).map(normalizeLabel));
+      const behaviorLabels = [
+        'memperhatikan',
+        'focused',
+        'nguap',
+        'yawning',
+        'balikbadan',
+        'looking_away',
+        'chatting',
+        'sleeping',
+        'using_phone',
+        'writing'
+      ];
+      const hasBehaviorLabels = behaviorLabels.some(l => modelLabelSet.has(l));
+      const usePersonOnly = !hasBehaviorLabels && modelLabelSet.has('person');
+      const candidateDetections = usePersonOnly
+        ? scaledDetections.filter(d => normalizeLabel(d.class_name) === 'person')
+        : scaledDetections;
+
+      const focusedLabels = new Set(
+        ['memperhatikan', 'focused'].some(l => modelLabelSet.has(l)) ? ['memperhatikan', 'focused'] : modelLabelSet.has('person') ? ['person'] : ['memperhatikan', 'focused']
+      );
+      const yawningLabels = new Set(['nguap', 'yawning']);
+      const lookingAwayLabels = new Set(['balikbadan', 'looking_away', 'chatting']);
+
+      let seatSnapshot: SeatPosition[] = [];
+      setSeatPositions(prev => {
+
+        const iou = (a: { x1: number; y1: number; x2: number; y2: number }, b: { x1: number; y1: number; x2: number; y2: number }) => {
+          const xA = Math.max(a.x1, b.x1);
+          const yA = Math.max(a.y1, b.y1);
+          const xB = Math.min(a.x2, b.x2);
+          const yB = Math.min(a.y2, b.y2);
+          const interW = Math.max(0, xB - xA);
+          const interH = Math.max(0, yB - yA);
+          const inter = interW * interH;
+          const areaA = Math.max(0, a.x2 - a.x1) * Math.max(0, a.y2 - a.y1);
+          const areaB = Math.max(0, b.x2 - b.x1) * Math.max(0, b.y2 - b.y1);
+          const denom = areaA + areaB - inter;
+          return denom > 0 ? inter / denom : 0;
+        };
+
+        const closeFocusWindow = (seat: SeatPosition) => {
+          if (seat.focus_start_time) {
+            return {
+              ...seat,
+              total_focus_duration: seat.total_focus_duration + Math.max(0, nowMs - seat.focus_start_time),
+              focus_start_time: null
+            };
           }
-          
-          const newSeat = { ...seat };
+          return seat;
+        };
 
-          // Handle focus duration tracking
-          if (seat.gesture_type === 'focused' && !existingSeat.face_detected) {
-            // Just started focusing
-            newSeat.focus_start_time = currentTime;
-            newSeat.total_focus_duration = existingSeat.total_focus_duration || 0;
-          } else if (seat.gesture_type !== 'focused' && existingSeat.face_detected && existingSeat.focus_start_time) {
-            // Stopped focusing
-            newSeat.total_focus_duration = (existingSeat.total_focus_duration || 0) + (currentTime - existingSeat.focus_start_time);
-            newSeat.focus_start_time = null;
-          } else if (seat.gesture_type === 'focused' && existingSeat.focus_start_time) {
-            // Continue focusing
-            newSeat.total_focus_duration = existingSeat.total_focus_duration || 0;
-            newSeat.focus_start_time = existingSeat.focus_start_time;
+        const nextSeats = prev.map(seat => {
+          const seatBox = { x1: seat.x, y1: seat.y, x2: seat.x + seat.width, y2: seat.y + seat.height };
+          let best: YoloDetection | null = null;
+          let bestScore = 0;
+
+          for (const det of candidateDetections) {
+            const detBox = det.bbox;
+            const score = iou(seatBox, detBox);
+            if (score > bestScore) {
+              bestScore = score;
+              best = det;
+            }
+          }
+
+          if (!best || bestScore < 0.05) {
+            const seatClosed = closeFocusWindow(seat);
+            return {
+              ...seatClosed,
+              face_detected: false,
+              is_occupied: false,
+              gesture_type: 'unknown',
+              confidence: 0,
+              departure_time: seat.attendance_time ? seatClosed.departure_time || new Date().toISOString() : seatClosed.departure_time
+            };
+          }
+
+          const className = String(best.class_name || '').toLowerCase();
+          const isFocused = focusedLabels.has(normalizeLabel(className));
+          const attendance_time = seat.attendance_time || new Date().toISOString();
+
+          let updated: SeatPosition = {
+            ...seat,
+            face_detected: true,
+            is_occupied: true,
+            gesture_type: best.class_name,
+            confidence: best.confidence,
+            attendance_time,
+            departure_time: null
+          };
+
+          if (isFocused) {
+            if (!updated.focus_start_time) updated.focus_start_time = nowMs;
           } else {
-            // Not focusing
-            newSeat.total_focus_duration = existingSeat.total_focus_duration || 0;
-            newSeat.focus_start_time = null;
+            updated = closeFocusWindow(updated);
           }
 
-          // Ensure attendance tracking
-          if (seat.face_detected && !existingSeat.attendance_time) {
-            newSeat.attendance_time = new Date().toISOString();
-          } else if (existingSeat.attendance_time) {
-            newSeat.attendance_time = existingSeat.attendance_time;
-          }
-
-          // Track departure time if student was present but is now gone
-          if (!seat.face_detected && existingSeat.face_detected && existingSeat.attendance_time && !existingSeat.departure_time) {
-            newSeat.departure_time = new Date().toISOString();
-          } else if (existingSeat.departure_time) {
-            newSeat.departure_time = existingSeat.departure_time;
-          }
-
-          return newSeat;
+          return updated;
         });
+        seatSnapshot = nextSeats;
+        return nextSeats;
+      });
 
-        setSeatPositions(newSeats);
+      setModelStatus('active');
+      setFlaskError('');
+      setLastInferenceMs(Date.now() - startTime);
 
-        // Calculate detection statistics
-        const totalDetections = newSeats.filter((seat: any) => seat.face_detected).length;
-        const focusedCount = newSeats.filter((seat: any) => seat.gesture_type === 'focused').length;
-        const notFocusedCount = totalDetections - focusedCount;
-        const sleepingCount = newSeats.filter((seat: any) => seat.gesture_type === 'sleeping').length;
-        const phoneUsingCount = newSeats.filter((seat: any) => seat.gesture_type === 'using_phone').length;
-        const chattingCount = newSeats.filter((seat: any) => seat.gesture_type === 'chatting').length;
-        const yawningCount = newSeats.filter((seat: any) => seat.gesture_type === 'yawning').length;
-        const writingCount = newSeats.filter((seat: any) => seat.gesture_type === 'writing').length;
-        const focusPercentage = totalDetections > 0 ? Math.round((focusedCount / totalDetections) * 100) : 0;
+      const detectionTime = new Date().toLocaleTimeString();
+      const totalDetections = smoothedDetections.length;
+      const focusedCount = smoothedDetections.filter(d => focusedLabels.has(normalizeLabel(d.class_name))).length;
+      const yawningCount = smoothedDetections.filter(d => yawningLabels.has(normalizeLabel(d.class_name))).length;
+      const chattingCount = smoothedDetections.filter(d => lookingAwayLabels.has(normalizeLabel(d.class_name))).length;
+      const notFocusedCount = Math.max(0, totalDetections - focusedCount);
+      const focusPercentage = totalDetections > 0 ? Math.round((focusedCount / totalDetections) * 100) : 0;
+      const label_counts = smoothedDetections.reduce<Record<string, number>>((acc, det) => {
+        const key = normalizeLabel(det.class_name);
+        acc[key] = (acc[key] || 0) + 1;
+        return acc;
+      }, {});
 
+      const now = Date.now();
+      const intervalMs = Math.max(1000, Math.round(recordIntervalSec * 1000));
+      const shouldRecord = now - lastRecordAtRef.current >= intervalMs;
+      if (shouldRecord) {
+        lastRecordAtRef.current = now;
+
+        const seatsForRecord = seatSnapshot.length > 0 ? seatSnapshot : seatPositions;
         const newDetectionData: DetectionData = {
           timestamp: detectionTime,
           totalDetections,
           focusedCount,
           notFocusedCount,
-          sleepingCount,
-          phoneUsingCount,
+          sleepingCount: 0,
+          phoneUsingCount: 0,
           chattingCount,
           yawningCount,
-          writingCount,
+          writingCount: 0,
           focusPercentage,
-          seatData: newSeats
+          label_counts,
+          seatData: seatsForRecord
         };
 
-        setDetectionData(prev => [...prev.slice(-19), newDetectionData]);
+        setDetectionData(prev => [...prev.slice(-119), newDetectionData]);
 
-        // Send to backend
-        try {
-          await axios.post(`/api/live-monitoring/detection/${sessionId}`, newDetectionData);
-        } catch (error) {
-          console.error('Failed to save detection data to backend:', error);
+        const startedAt = sessionStartedAtRef.current;
+        const elapsedSeconds = startedAt ? Math.max(0, Math.floor((now - startedAt) / 1000)) : 0;
+        const summaryParts = [
+          `fokus ${focusedCount}`,
+          `tidak ${notFocusedCount}`,
+          yawningCount > 0 ? `nguap ${yawningCount}` : null,
+          chattingCount > 0 ? `balikbadan ${chattingCount}` : null
+        ].filter(Boolean);
+
+        const record: DetectionRecord = {
+          id: `${now}-${Math.random().toString(16).slice(2)}`,
+          timestamp: detectionTime,
+          elapsedTime: formatElapsed(elapsedSeconds),
+          totalDetections,
+          focusedCount,
+          notFocusedCount,
+          yawningCount,
+          chattingCount,
+          focusPercentage,
+          summary: summaryParts.join(' • ')
+        };
+
+        setDetectionRecords(prev => [record, ...prev].slice(0, 200));
+
+        if (now - lastBackendSaveAtRef.current >= intervalMs && currentSession?.sessionId === sessionId) {
+          lastBackendSaveAtRef.current = now;
+          const seat_data = seatsForRecord.map(seat => ({
+            seat_id: String(seat.seat_id),
+            student_id: seat.student_id || null,
+            is_focused: focusedLabels.has(normalizeLabel(seat.gesture_type)),
+            is_occupied: seat.is_occupied,
+            attendance_time: seat.attendance_time,
+            departure_time: seat.departure_time
+          }));
+          try {
+            await axios.post(`/api/live-monitoring/detection/${sessionId}`, {
+              totalDetections,
+              focusedCount,
+              notFocusedCount,
+              sleepingCount: 0,
+              phoneUsingCount: 0,
+              chattingCount,
+              yawningCount,
+              writingCount: 0,
+              focusPercentage,
+              record_interval_ms: intervalMs,
+              total_seats: seatsForRecord.length,
+              seat_data
+            });
+          } catch (error) {
+            const err: any = error;
+            const status = err?.response?.status;
+            const msg = err?.response?.data?.message || err?.message || 'Unknown error';
+            console.error('Failed to save detection data to backend:', status ? `[${status}] ${msg}` : msg);
+          }
         }
-      } else {
-        console.error('Detection failed:', response.data.message || 'Unknown error');
-        toast.error('Detection failed: ' + (response.data.message || 'Unknown error'));
       }
+      requestDraw();
 
     } catch (error: any) {
       const errorMessage = error.response?.data?.message || error.message || 'Unknown error';
       console.error('Flask detection error:', errorMessage);
-      toast.error('Detection error: ' + errorMessage);
+      setFlaskError(errorMessage);
+    }
+    finally {
+      isProcessingRef.current = false;
     }
   };
 
@@ -975,8 +1370,23 @@ export default function LiveMonitoring() {
     if (!currentSession) return;
 
     try {
-      const schedule = schedules.find(s => s._id === selectedSchedule);
-      if (!schedule) return;
+      const schedule = activeSchedule || schedules.find(s => s._id === selectedSchedule);
+      if (!schedule) {
+        showError('Export Gagal', 'Schedule belum dipilih. Pilih schedule dulu sebelum export.');
+        return null;
+      }
+      if (!isToday(schedule.tanggal)) {
+        showError('Export Gagal', 'Schedule hanya bisa dilakukan pada tanggal yang dijadwalkan.');
+        return null;
+      }
+
+      const startMs = currentSession.startTime ? new Date(currentSession.startTime).getTime() : sessionStartedAtRef.current || Date.now();
+      const sessionDurationMs = Math.max(1, Date.now() - startMs);
+      const sessionDurationMin = Math.max(1, Math.round(sessionDurationMs / 60000));
+      const averageFocusPct =
+        detectionData.length > 0
+          ? detectionData.reduce((sum, d) => sum + (Number(d.focusPercentage) || 0), 0) / detectionData.length
+          : 0;
 
       // Calculate per-student statistics
       const studentStats = seatPositions
@@ -988,8 +1398,34 @@ export default function LiveMonitoring() {
           attendance_time: seat.attendance_time,
           departure_time: seat.departure_time,
           focus_percentage: seat.total_focus_duration > 0 && currentSession.startTime ? 
-            (seat.total_focus_duration / (Date.now() - new Date(currentSession.startTime).getTime())) * 100 : 0
+            (seat.total_focus_duration / sessionDurationMs) * 100 : 0
         }));
+
+      const toId = (value: any) => (typeof value === 'string' ? value : value?._id);
+      const mataKuliahId = toId(schedule.mata_kuliah_id) || schedule.mata_kuliah_id;
+      const dosenId = toId(schedule.dosen_id) || (user?.role === 'admin' ? selectedDosenId : user?.id);
+
+      const dataFokus = seatPositions.map(seat => {
+        const pct = Math.max(0, Math.min(100, seat.total_focus_duration > 0 ? (seat.total_focus_duration / sessionDurationMs) * 100 : 0));
+        const persenFokus = Math.round(pct);
+        const durasiFokusMin = Math.max(0, Math.round(seat.total_focus_duration / 60000));
+        const jumlahSesiFokus = durasiFokusMin;
+        let status: 'Baik' | 'Cukup' | 'Kurang' = 'Kurang';
+        if (persenFokus >= 80) status = 'Baik';
+        else if (persenFokus >= 60) status = 'Cukup';
+
+        return {
+          id_siswa: seat.student_id || `S${seat.seat_id}`,
+          jumlah_sesi_fokus: jumlahSesiFokus,
+          durasi_fokus: durasiFokusMin,
+          persen_fokus: persenFokus,
+          persen_tidak_fokus: 100 - persenFokus,
+          status
+        };
+      });
+
+      const focusedCount = seatPositions.filter(s => s.total_focus_duration > 0).length;
+      const focusPercentage = seatPositions.length > 0 ? Math.round((focusedCount / seatPositions.length) * 100) : 0;
 
       // Save to database
       const response = await axios.post('/api/session-records', {
@@ -1003,27 +1439,55 @@ export default function LiveMonitoring() {
         summary: {
           totalSeats: seatPositions.length,
           averageFocusTime: seatPositions.reduce((sum, seat) => sum + seat.total_focus_duration, 0) / seatPositions.length,
-          sessionDuration: Date.now() - new Date(currentSession.startTime).getTime()
+          averageFocusTimePct: averageFocusPct,
+          sessionDuration: sessionDurationMs
         },
         tanggal: schedule.tanggal,
         jamMulai: schedule.jam_mulai,
         jamSelesai: schedule.jam_selesai,
         durasi: schedule.durasi,
-        dosenId: schedule.dosen_id
+        dosenId: toId(schedule.dosen_id) || schedule.dosen_id
       });
 
-      toast.success('Session data exported successfully');
+      await axios.post('/api/pertemuan', {
+        sessionId: currentSession.sessionId,
+        tanggal: schedule.tanggal || new Date(),
+        pertemuan_ke: schedule.pertemuan_ke || 1,
+        kelas: schedule.kelas,
+        mata_kuliah: schedule.mata_kuliah,
+        mata_kuliah_id: mataKuliahId,
+        dosen_id: dosenId,
+        durasi_pertemuan: sessionDurationMin,
+        topik: schedule.topik || 'Live Monitoring Session',
+        data_fokus: dataFokus,
+        hasil_akhir_kelas: {
+          fokus: focusPercentage,
+          tidak_fokus: 100 - focusPercentage,
+          jumlah_hadir: seatPositions.length,
+          fokus_count: focusedCount,
+          tidak_fokus_count: Math.max(0, seatPositions.length - focusedCount)
+        }
+      });
+
+      if (selectedSchedule) {
+        await axios.put(`/api/jadwal/${selectedSchedule}`, { status: 'completed' });
+      }
+
+      showSuccess('Berhasil', 'Session berhasil diexport dan tersimpan.');
+      await fetchSchedules();
+      setSelectedSchedule('');
+      setActiveSchedule(null);
       return response.data;
     } catch (error) {
       console.error('Export error:', error);
-      toast.error('Failed to export session data');
+      showError('Export Gagal', 'Gagal export session data.');
       return null;
     }
   };
   
   const downloadSessionData = async () => {
     if (!currentSession) {
-      toast.error('No active session to download');
+      showError('Tidak Bisa', 'Tidak ada sesi aktif untuk diunduh.');
       return;
     }
     
@@ -1041,16 +1505,16 @@ export default function LiveMonitoring() {
       link.click();
       document.body.removeChild(link);
       
-      toast.success('Session data downloaded successfully');
+      showSuccess('Berhasil', 'Session berhasil diunduh.');
     } catch (error) {
       console.error('Download error:', error);
-      toast.error('Failed to download session data');
+      showError('Gagal', 'Gagal mengunduh session data.');
     }
   };
   
   const saveSessionData = async () => {
     if (!currentSession) {
-      toast.error('No active session to save');
+      showError('Gagal Menyimpan', 'Tidak ada sesi aktif untuk disimpan.');
       return;
     }
     
@@ -1060,21 +1524,25 @@ export default function LiveMonitoring() {
       if (!exportedData) return;
       
       // Then save the session state
-      await axios.post(`/api/live-monitoring/save/${currentSession.sessionId}`, {
-        seatPositions,
-        detectionData
+      await axios.post(`/api/live-monitoring/saveState/${currentSession.sessionId}`, { 
+        state: { seatPositions, detectionData } 
       });
       
-      toast.success('Session state saved successfully');
+      showSuccess('Berhasil', 'State sesi berhasil disimpan.');
     } catch (error) {
       console.error('Save error:', error);
-      toast.error('Failed to save session state');
+      showError('Gagal Menyimpan', 'Gagal menyimpan state sesi.');
     }
   };
 
   const loadScheduleData = (scheduleId: string) => {
     const schedule = schedules.find(s => s._id === scheduleId);
     if (schedule) {
+      setActiveSchedule(schedule);
+      const toId = (value: any) => (typeof value === 'string' ? value : value?._id);
+      const mkId = toId(schedule.mata_kuliah_id) || schedule.mata_kuliah_id;
+      if (mkId && mkId !== selectedSubjectId) setSelectedSubjectId(mkId);
+      if (schedule.kelas && schedule.kelas !== selectedClassName) setSelectedClassName(schedule.kelas);
       setSessionName(`${schedule.mata_kuliah} - ${schedule.kelas} - Meeting ${schedule.pertemuan_ke}`);
       // Load seat positions if available
       if (schedule.seat_positions && schedule.seat_positions.length > 0) {
@@ -1160,6 +1628,16 @@ export default function LiveMonitoring() {
             <Settings className="h-5 w-5 mr-2" />
             Configuration
           </h3>
+
+          <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+            <div className="font-semibold mb-2">Panduan Penggunaan (Live)</div>
+            <div className="space-y-1">
+              <div>1) Pilih data: {user?.role === 'admin' ? 'Dosen → Mata Kuliah → Kelas → Jadwal (Hari Ini)' : 'Mata Kuliah → Kelas → Jadwal (Hari Ini)'}</div>
+              <div>2) Start Monitoring: sistem mengunci jadwal menjadi Ongoing (jadwal hilang dari list).</div>
+              <div>3) (Opsional) Enter Labelling Mode untuk menggambar seat, atau Generate Grid.</div>
+              <div>4) Stop & Export: data disimpan + jadwal menjadi Completed (tetap tidak muncul).</div>
+            </div>
+          </div>
           
           <div className="space-y-4">
             {/* Flask Status */}
@@ -1192,24 +1670,135 @@ export default function LiveMonitoring() {
               )}
             </div>
 
+            {user?.role === 'admin' && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center">
+                  <User className="h-4 w-4 mr-2" />
+                  Guru/Dosen
+                </label>
+                <select
+                  value={selectedDosenId}
+                  onChange={(e) => {
+                    setSelectedDosenId(e.target.value);
+                    setSelectedSubjectId('');
+                    setSelectedClassName('');
+                    setSelectedSchedule('');
+                    setActiveSchedule(null);
+                    setSessionName('');
+                    setSeatPositions([]);
+                  }}
+                  disabled={isMonitoring}
+                  className="w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                >
+                  <option value="">Pilih dosen</option>
+                  {dosenOptions.map((d) => (
+                    <option key={d._id} value={d._id}>
+                      {d.nama_lengkap || d.username || d._id}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center">
+                <BookOpen className="h-4 w-4 mr-2" />
+                Mata Kuliah
+              </label>
+              <select
+                value={selectedSubjectId}
+                onChange={(e) => {
+                  setSelectedSubjectId(e.target.value);
+                  setSelectedClassName('');
+                  setSelectedSchedule('');
+                  setActiveSchedule(null);
+                  setSessionName('');
+                  setSeatPositions([]);
+                }}
+                disabled={
+                  isMonitoring ||
+                  loadingSubjects ||
+                  (user?.role === 'admin' && !selectedDosenId)
+                }
+                className="w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+              >
+                <option value="">
+                  {user?.role === 'admin' && !selectedDosenId
+                    ? 'Pilih dosen dulu'
+                    : loadingSubjects
+                      ? 'Memuat...'
+                      : 'Pilih mata kuliah'}
+                </option>
+                {subjects.map((s) => (
+                  <option key={s._id} value={s._id}>
+                    {s.nama} ({s.kode})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center">
+                <Users className="h-4 w-4 mr-2" />
+                Kelas
+              </label>
+              <select
+                value={selectedClassName}
+                onChange={(e) => {
+                  setSelectedClassName(e.target.value);
+                  setSelectedSchedule('');
+                  setActiveSchedule(null);
+                  setSessionName('');
+                  setSeatPositions([]);
+                }}
+                disabled={isMonitoring || !selectedSubjectId}
+                className="w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+              >
+                <option value="">
+                  {!selectedSubjectId ? 'Pilih mata kuliah dulu' : 'Pilih kelas'}
+                </option>
+                {(selectedSubject?.kelas || []).map((k) => (
+                  <option key={k} value={k}>
+                    {k}
+                  </option>
+                ))}
+              </select>
+            </div>
+
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center">
                 <Calendar className="h-4 w-4 mr-2" />
-                Select Schedule
+                Jadwal (Hari Ini)
               </label>
               <select
                 value={selectedSchedule}
                 onChange={(e) => {
                   setSelectedSchedule(e.target.value);
+                  if (!e.target.value) {
+                    setActiveSchedule(null);
+                    setSessionName('');
+                    return;
+                  }
                   loadScheduleData(e.target.value);
                 }}
-                disabled={isMonitoring}
+                disabled={
+                  isMonitoring ||
+                  !selectedSubjectId ||
+                  !selectedClassName ||
+                  (user?.role === 'admin' && !selectedDosenId)
+                }
                 className="w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
               >
-                <option value="">Select Schedule</option>
+                <option value="">
+                  {!selectedSubjectId || !selectedClassName
+                    ? 'Pilih mata kuliah & kelas dulu'
+                    : schedules.length === 0
+                      ? 'Tidak ada jadwal hari ini'
+                      : 'Pilih jadwal'}
+                </option>
                 {schedules.map((schedule) => (
                   <option key={schedule._id} value={schedule._id}>
-                    {schedule.mata_kuliah} - {schedule.kelas} (Meeting {schedule.pertemuan_ke})
+                    {schedule.mata_kuliah} - {schedule.kelas} • {schedule.jam_mulai}-{schedule.jam_selesai} • P{schedule.pertemuan_ke}
                   </option>
                 ))}
               </select>
@@ -1230,58 +1819,104 @@ export default function LiveMonitoring() {
               />
             </div>
 
-            {/* YOLO Model selection removed - now using model_1.py and model_2.py directly */}
-            
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center">
                 <Brain className="h-4 w-4 mr-2" />
-                Detection Model Type
+                Model Info
               </label>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setModelType('model_1')}
-                  disabled={isMonitoring || modelStatus === 'loading'}
-                  className={`py-2 px-3 text-sm font-medium rounded-md ${detectionModelType === 'model_1' 
-                    ? 'bg-blue-600 text-white' 
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'} ${(isMonitoring || modelStatus === 'loading') ? 'opacity-60 cursor-not-allowed' : ''}`}
-                >
-                  {modelStatus === 'loading' && detectionModelType === 'model_1' ? (
-                    <span className="flex items-center justify-center">
-                      <span className="animate-spin rounded-full h-3 w-3 border-b-2 border-current mr-1"></span>
-                      Loading...
-                    </span>
-                  ) : (
-                    <>
-                      Model 1
-                      <div className="text-xs mt-1 opacity-80">(Tidur, Main HP)</div>
-                    </>
-                  )}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setModelType('model_2')}
-                  disabled={isMonitoring || modelStatus === 'loading'}
-                  className={`py-2 px-3 text-sm font-medium rounded-md ${detectionModelType === 'model_2' 
-                    ? 'bg-blue-600 text-white' 
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'} ${(isMonitoring || modelStatus === 'loading') ? 'opacity-60 cursor-not-allowed' : ''}`}
-                >
-                  {modelStatus === 'loading' && detectionModelType === 'model_2' ? (
-                    <span className="flex items-center justify-center">
-                      <span className="animate-spin rounded-full h-3 w-3 border-b-2 border-current mr-1"></span>
-                      Loading...
-                    </span>
-                  ) : (
-                    <>
-                      Model 2
-                      <div className="text-xs mt-1 opacity-80">(Nguap, Balik Badan)</div>
-                    </>
-                  )}
-                </button>
+              <div className="p-3 rounded-md bg-gray-50 border border-gray-200 text-sm text-gray-700">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="font-medium">Classes</span>
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={checkFlaskStatus}
+                      disabled={modelStatus === 'loading'}
+                      className="text-blue-600 hover:text-blue-700 font-medium disabled:opacity-60"
+                    >
+                      Refresh
+                    </button>
+                    <button
+                      type="button"
+                      onClick={testDetectionOnce}
+                      disabled={isTestingDetection}
+                      className="text-blue-600 hover:text-blue-700 font-medium disabled:opacity-60"
+                    >
+                      Test
+                    </button>
+                  </div>
+                </div>
+                {modelInfo?.num_classes ? (
+                  <div className="space-y-1">
+                    <div className="text-gray-600">{modelInfo.num_classes} class</div>
+                    <div className="text-gray-600 break-words">
+                      {Object.values(modelInfo.names).join(', ')}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-gray-600">Belum ada data model-info.</div>
+                )}
+                <div className="mt-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span>Confidence</span>
+                    <span className="font-medium">{detectionConf.toFixed(2)}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0.01}
+                    max={0.5}
+                    step={0.01}
+                    value={detectionConf}
+                    onChange={(e) => setDetectionConf(Number(e.target.value))}
+                    className="w-full"
+                  />
+                </div>
+                <div className="mt-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span>Frame width</span>
+                    <span className="font-medium">{detectionWidth}px</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={640}
+                    max={1920}
+                    step={64}
+                    value={detectionWidth}
+                    onChange={(e) => setDetectionWidth(Number(e.target.value))}
+                    className="w-full"
+                  />
+                </div>
+                <div className="mt-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span>JPEG quality</span>
+                    <span className="font-medium">{detectionJpegQuality.toFixed(2)}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0.4}
+                    max={0.95}
+                    step={0.05}
+                    value={detectionJpegQuality}
+                    onChange={(e) => setDetectionJpegQuality(Number(e.target.value))}
+                    className="w-full"
+                  />
+                </div>
+                <div className="mt-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span>Record every</span>
+                    <span className="font-medium">{recordIntervalSec}s</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={1}
+                    max={10}
+                    step={1}
+                    value={recordIntervalSec}
+                    onChange={(e) => setRecordIntervalSec(Number(e.target.value))}
+                    className="w-full"
+                  />
+                </div>
               </div>
-              {flaskError && detectionModelType && (
-                <p className="text-xs text-red-600 mt-2">Error with {detectionModelType}: {flaskError}</p>
-              )}
             </div>
 
             <div>
@@ -1407,7 +2042,7 @@ export default function LiveMonitoring() {
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
                   onClick={startMonitoring}
-                  disabled={!selectedSchedule || seatPositions.length === 0}
+                  disabled={!selectedSchedule}
                   className="w-full flex items-center justify-center px-4 py-2 bg-gradient-to-r from-green-500 to-green-600 text-white rounded-lg font-medium disabled:opacity-50"
                 >
                   <Play className="h-4 w-4 mr-2" />
@@ -1486,6 +2121,15 @@ toast('Upload feature will be available soon', {
               className="w-full h-full object-cover"
               style={{ display: cameraStream ? 'block' : 'none' }}
             />
+
+            {annotatedImage && (
+              <img
+                src={annotatedImage}
+                alt="Annotated detection"
+                className="absolute inset-0 w-full h-full object-cover"
+                style={{ pointerEvents: 'none' }}
+              />
+            )}
             
             <canvas
               ref={canvasRef}
@@ -1494,7 +2138,8 @@ toast('Upload feature will be available soon', {
                 display: cameraStream ? 'block' : 'none',
                 cursor: isLabellingMode ? 'crosshair' : 'default',
                 backgroundColor: 'transparent',
-                touchAction: 'none'
+                touchAction: 'none',
+                pointerEvents: isLabellingMode ? 'auto' : 'none'
               }}
               onMouseDown={handleCanvasMouseDown}
               onMouseMove={handleCanvasMouseMove}
@@ -1526,10 +2171,66 @@ toast('Upload feature will be available soon', {
 
             {modelStatus === 'active' && isMonitoring && (
               <div className="absolute bottom-4 left-4 bg-green-500 text-white px-3 py-1 rounded-full text-sm font-medium">
-                YOLO MODEL ACTIVE
+                MODEL ACTIVE
               </div>
             )}
           </div>
+
+          {isMonitoring && (
+            <div className="mt-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
+              <div className="flex items-center justify-between mb-2">
+                <h4 className="font-medium text-gray-900">Detections</h4>
+                <span className="text-sm text-gray-600">{yoloDetections.length} objects</span>
+              </div>
+              <div className="flex items-center justify-between text-sm text-gray-600 mb-3">
+                <span>Last inference</span>
+                <span>{lastInferenceMs !== null ? `${lastInferenceMs} ms` : '-'}</span>
+              </div>
+              {yoloDetections.length > 0 ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {yoloDetections.slice(0, 6).map((d, idx) => (
+                    <div key={`${d.class_name}-${idx}`} className="flex items-center justify-between text-sm">
+                      <span className="text-gray-700">{d.class_name}</span>
+                      <span className="text-gray-500">{Math.round(d.confidence * 100)}%</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-sm text-gray-600">
+                  Tidak ada deteksi. Coba turunkan confidence atau pastikan objek sesuai label model (mis. memperhatikan/nguap/balikbadan).
+                </div>
+              )}
+            </div>
+          )}
+
+          {isMonitoring && (
+            <div className="mt-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
+              <div className="flex items-center justify-between mb-2">
+                <h4 className="font-medium text-gray-900">Record Log</h4>
+                <span className="text-sm text-gray-600">{detectionRecords.length} records</span>
+              </div>
+              {detectionRecords.length > 0 ? (
+                <div className="space-y-2 max-h-56 overflow-auto">
+                  {detectionRecords.slice(0, 20).map((r) => (
+                    <div key={r.id} className="flex items-start justify-between text-sm">
+                      <div className="text-gray-700">
+                        <div className="font-medium">{r.elapsedTime}</div>
+                        <div className="text-gray-500">{r.timestamp}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-gray-700">{r.summary}</div>
+                        <div className="text-gray-500">{r.focusPercentage}%</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-sm text-gray-600">
+                  Belum ada record. Pastikan monitoring berjalan, atau klik Test lalu tunggu sesuai interval.
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Instructions */}
           <div className="mt-4 p-4 bg-blue-50 rounded-lg">
@@ -1544,11 +2245,15 @@ toast('Upload feature will be available soon', {
               </ul>
             ) : (
               <div className="text-sm text-blue-700 space-y-1">
-                <p>• AI detection active within seat boundaries</p>
-                <p>• Gesture recognition: {detectionModelType === 'model_1' ? 'normal, tidur, main hp' : 'normal, nguap, balik badan'}</p>
-                <p>• Real-time statistics updated every 2 seconds</p>
-                <p>• Model Type: {detectionModelType}</p>
-                <p>• Detection Type: {detectionModelType === 'model_1' ? 'Model 1 (Tidur, Main HP)' : 'Model 2 (Nguap, Balik Badan)'}</p>
+                <p>• AI detection runs on full frame (webcam)</p>
+                <p>• Frame size sent to backend: {detectionWidth}px width (JPEG {detectionJpegQuality.toFixed(2)})</p>
+                <p>• Requests throttled (no overlapping inference)</p>
+                <p>• Recording interval: {recordIntervalSec}s</p>
+                {modelInfo?.num_classes ? (
+                  <p>• Classes: {Object.values(modelInfo.names).join(', ')}</p>
+                ) : (
+                  <p>• Classes: (load model-info to view)</p>
+                )}
               </div>
             )}
           </div>
@@ -1589,32 +2294,15 @@ toast('Upload feature will be available soon', {
                     <span className="text-sm text-gray-600">Not Focused</span>
                     <span className="text-sm font-medium text-red-600">{latestData.notFocusedCount}</span>
                   </div>
-                  
-                  {detectionModelType === 'model_1' && (
-                    <>
-                      <div className="flex justify-between items-center">
-                        <span className="text-sm text-gray-600">Sleeping</span>
-                        <span className="text-sm font-medium text-purple-600">{latestData.sleepingCount}</span>
-                      </div>
-                      <div className="flex justify-between items-center">
-                        <span className="text-sm text-gray-600">Using Phone</span>
-                        <span className="text-sm font-medium text-orange-600">{latestData.phoneUsingCount}</span>
-                      </div>
-                    </>
-                  )}
-                  
-                  {detectionModelType === 'model_2' && (
-                    <>
-                      <div className="flex justify-between items-center">
-                        <span className="text-sm text-gray-600">Yawning</span>
-                        <span className="text-sm font-medium text-purple-600">{latestData.yawningCount}</span>
-                      </div>
-                      <div className="flex justify-between items-center">
-                        <span className="text-sm text-gray-600">Turning Back</span>
-                        <span className="text-sm font-medium text-orange-600">{latestData.writingCount}</span>
-                      </div>
-                    </>
-                  )}
+
+                <div className="flex justify-between items-center">
+                  <span className="text-sm text-gray-600">Yawning</span>
+                  <span className="text-sm font-medium text-purple-600">{latestData.yawningCount}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-sm text-gray-600">Balik Badan</span>
+                  <span className="text-sm font-medium text-orange-600">{latestData.chattingCount}</span>
+                </div>
                   
                   <div className="flex justify-between items-center">
                     <span className="text-sm text-gray-600">Average Focus</span>
@@ -1737,7 +2425,7 @@ toast('Upload feature will be available soon', {
                 <div className="flex justify-between">
                   <span className="text-purple-700">Model:</span>
                   <span className="font-medium text-purple-900">
-                    {detectionModelType}
+                    {modelInfo?.num_classes ? 'Ultralytics YOLO (.pt)' : 'Not loaded'}
                   </span>
                 </div>
               </div>

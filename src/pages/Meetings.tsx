@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import axios from 'axios';
 import { Plus, Search, Calendar, Eye, Edit, Trash2, Filter } from 'lucide-react';
-import toast from 'react-hot-toast';
+import { useStatusModal } from '../contexts/StatusModalContext';
 
 interface Meeting {
   _id: string;
@@ -29,6 +29,7 @@ interface Meeting {
 }
 
 export default function Meetings() {
+  const { showSuccess, showError } = useStatusModal();
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -42,11 +43,11 @@ export default function Meetings() {
 
   const fetchMeetings = async () => {
     try {
-      const response = await axios.get('/pertemuan');
+      const response = await axios.get('/api/pertemuan');
       setMeetings(response.data);
     } catch (error) {
       console.error('Error fetching meetings:', error);
-      toast.error('Failed to fetch meetings');
+      showError('Gagal', 'Gagal mengambil data meetings.');
     } finally {
       setLoading(false);
     }
@@ -55,12 +56,12 @@ export default function Meetings() {
   const handleDelete = async (id: string) => {
     if (window.confirm('Are you sure you want to delete this meeting?')) {
       try {
-        await axios.delete(`/pertemuan/${id}`);
-        toast.success('Meeting deleted successfully');
+        await axios.delete(`/api/pertemuan/${id}`);
+        showSuccess('Berhasil', 'Meeting berhasil dihapus.');
         fetchMeetings();
       } catch (error) {
         console.error('Error deleting meeting:', error);
-        toast.error('Failed to delete meeting');
+        showError('Gagal', 'Gagal menghapus meeting.');
       }
     }
   };

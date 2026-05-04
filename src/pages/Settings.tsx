@@ -18,11 +18,12 @@ import {
   UploadCloud,
   Trash2,
   Download,
-  Cloud
+  Cloud,
+  RefreshCw
 } from 'lucide-react';
 import axios from 'axios';
-import toast from 'react-hot-toast';
 import { useAuth } from '../contexts/AuthContext';
+import { useStatusModal } from '../contexts/StatusModalContext';
 
 interface SettingsData {
   // General Settings
@@ -65,6 +66,7 @@ interface FirebaseModel {
 
 export default function Settings() {
   const { user } = useAuth();
+  const { showSuccess, showError } = useStatusModal();
   const [settings, setSettings] = useState<SettingsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -79,11 +81,11 @@ export default function Settings() {
 
   const fetchSettings = async () => {
     try {
-      const response = await axios.get('/settings');
+      const response = await axios.get('/api/settings');
       setSettings(response.data);
     } catch (error) {
       console.error('Error fetching settings:', error);
-      toast.error('Failed to fetch settings');
+      showError('Gagal', 'Gagal mengambil settings.');
     } finally {
       setLoading(false);
     }
@@ -117,7 +119,7 @@ export default function Settings() {
       setFirebaseModels(mockModels);
     } catch (error) {
       console.error('Error fetching Firebase models:', error);
-      toast.error('Failed to fetch models from Firebase');
+      showError('Gagal', 'Gagal mengambil daftar model.');
     }
   };
 
@@ -126,11 +128,11 @@ export default function Settings() {
     
     setSaving(true);
     try {
-      await axios.put('/settings', settings);
-      toast.success('Settings saved successfully');
+      await axios.put('/api/settings', settings);
+      showSuccess('Berhasil', 'Settings berhasil disimpan.');
     } catch (error) {
       console.error('Error saving settings:', error);
-      toast.error('Failed to save settings');
+      showError('Gagal', 'Gagal menyimpan settings.');
     } finally {
       setSaving(false);
     }
@@ -149,9 +151,9 @@ export default function Settings() {
       );
       setFirebaseModels(updatedModels);
       
-      toast.success('Model test successful');
+      showSuccess('Berhasil', 'Model test berhasil.');
     } catch (error: any) {
-      toast.error('Model test failed');
+      showError('Gagal', 'Model test gagal.');
     } finally {
       setTestingModel(false);
     }
@@ -191,9 +193,9 @@ export default function Settings() {
         )
       );
       
-      toast.success('Model uploaded to Firebase successfully');
+      showSuccess('Berhasil', 'Model berhasil diupload.');
     } catch (error: any) {
-      toast.error('Failed to upload model to Firebase');
+      showError('Gagal', 'Gagal upload model.');
       
       // Remove failed upload
       setFirebaseModels(prev => 
@@ -212,16 +214,16 @@ export default function Settings() {
       await new Promise(resolve => setTimeout(resolve, 1000));
       
       setFirebaseModels(prev => prev.filter(model => model.id !== modelId));
-      toast.success('Model deleted from Firebase');
+      showSuccess('Berhasil', 'Model berhasil dihapus.');
     } catch (error) {
-      toast.error('Failed to delete model');
+      showError('Gagal', 'Gagal menghapus model.');
     }
   };
 
   const downloadModel = async (model: FirebaseModel) => {
     try {
       // Simulate download
-      toast.success(`Downloading ${model.name}...`);
+      showSuccess('Mulai Download', `Mengunduh ${model.name}...`);
       
       // In a real implementation, you would:
       // const response = await fetch(model.downloadURL);
@@ -233,7 +235,7 @@ export default function Settings() {
       // a.click();
       
     } catch (error) {
-      toast.error('Failed to download model');
+      showError('Gagal', 'Gagal download model.');
     }
   };
 
@@ -271,6 +273,26 @@ export default function Settings() {
     const sizes = ['Bytes', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  };
+  
+  const clearDummyData = async () => {
+    if (!window.confirm('Aksi ini akan menghapus data dummy. Lanjutkan?')) return;
+    try {
+      await axios.post('/api/settings/purge-dummy', { confirm: true });
+      showSuccess('Berhasil', 'Data dummy berhasil dihapus.');
+    } catch (error: any) {
+      showError('Gagal', error?.response?.data?.message || error?.message || 'Gagal menghapus data dummy.');
+    }
+  };
+
+  const clearAllData = async () => {
+    if (!window.confirm('PERINGATAN: Aksi ini akan menghapus SEMUA data di database. Lanjutkan?')) return;
+    try {
+      await axios.post('/api/settings/purge-all', { confirm: true });
+      showSuccess('Berhasil', 'Semua data berhasil dihapus.');
+    } catch (error: any) {
+      showError('Gagal', error?.response?.data?.message || error?.message || 'Gagal menghapus semua data.');
+    }
   };
 
   if (user?.role !== 'admin') {
@@ -512,6 +534,45 @@ export default function Settings() {
                 onChange={(e) => setSettings({ ...settings, backupInterval: parseInt(e.target.value) })}
                 className="w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
               />
+            </div>
+            
+            <div className="p-4 border border-red-200 rounded-lg bg-red-50 space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-gray-900 flex items-center">
+                    <Trash2 className="h-4 w-4 text-red-600 mr-2" />
+                    Hapus Data Dummy
+                  </p>
+                  <p className="text-xs text-gray-500">Menghapus data dummy tanpa mengisi ulang.</p>
+                </div>
+                <motion.button
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={clearDummyData}
+                  className="flex items-center px-4 py-2 bg-red-600 text-white rounded text-sm font-medium hover:bg-red-700"
+                >
+                  <Trash2 className="h-4 w-4 mr-2" />
+                  Hapus Dummy
+                </motion.button>
+              </div>
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-gray-900 flex items-center">
+                    <RefreshCw className="h-4 w-4 text-red-600 mr-2" />
+                    Hapus Semua Data
+                  </p>
+                  <p className="text-xs text-gray-500">Menghapus semua data di database (users, kelas, mata kuliah, jadwal, pertemuan, sesi).</p>
+                </div>
+                <motion.button
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={clearAllData}
+                  className="flex items-center px-4 py-2 bg-red-700 text-white rounded text-sm font-medium hover:bg-red-800"
+                >
+                  <RefreshCw className="h-4 w-4 mr-2" />
+                  Hapus Semua
+                </motion.button>
+              </div>
             </div>
           </div>
         </motion.div>

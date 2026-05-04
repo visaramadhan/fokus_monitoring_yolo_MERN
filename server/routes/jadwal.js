@@ -81,10 +81,47 @@ const Schedule = mongoose.model('Schedule', scheduleSchema);
 router.get('/', auth, async (req, res) => {
   try {
     let query = {};
+    const { status, date, dosen_id, mata_kuliah_id, kelas } = req.query;
     
     // Filter by user role
     if (req.user.role === 'dosen') {
       query.dosen_id = req.user._id;
+    } else if (dosen_id) {
+      const raw = String(dosen_id);
+      if (!mongoose.Types.ObjectId.isValid(raw)) {
+        return res.status(400).json({ message: 'Invalid dosen_id' });
+      }
+      query.dosen_id = new mongoose.Types.ObjectId(raw);
+    }
+    if (status) {
+      if (status === 'pending') {
+        query.status = { $in: ['scheduled', 'ongoing'] };
+      } else if (status === 'available') {
+        query.status = 'scheduled';
+      } else if (status === 'completed' || status === 'cancelled' || status === 'scheduled' || status === 'ongoing') {
+        query.status = status;
+      }
+    }
+    if (mata_kuliah_id) {
+      const raw = String(mata_kuliah_id);
+      if (!mongoose.Types.ObjectId.isValid(raw)) {
+        return res.status(400).json({ message: 'Invalid mata_kuliah_id' });
+      }
+      query.mata_kuliah_id = new mongoose.Types.ObjectId(raw);
+    }
+    if (kelas) {
+      query.kelas = String(kelas);
+    }
+    if (date) {
+      const d = new Date(String(date));
+      if (Number.isNaN(d.getTime())) {
+        return res.status(400).json({ message: 'Invalid date. Use YYYY-MM-DD' });
+      }
+      const start = new Date(d);
+      start.setHours(0, 0, 0, 0);
+      const end = new Date(start);
+      end.setDate(end.getDate() + 1);
+      query.tanggal = { $gte: start, $lt: end };
     }
 
     const schedules = await Schedule.find(query)
@@ -147,6 +184,18 @@ router.put('/:id', auth, async (req, res) => {
     // Check access for dosen role
     if (req.user.role === 'dosen' && schedule.dosen_id.toString() !== req.user._id.toString()) {
       return res.status(403).json({ message: 'Access denied' });
+    }
+
+    if (req.body?.status === 'ongoing' || req.body?.status === 'completed') {
+      const now = new Date();
+      const start = new Date(now);
+      start.setHours(0, 0, 0, 0);
+      const end = new Date(start);
+      end.setDate(end.getDate() + 1);
+      const scheduleDate = new Date(schedule.tanggal);
+      if (!(scheduleDate >= start && scheduleDate < end)) {
+        return res.status(400).json({ message: 'Monitoring hanya boleh dilakukan pada tanggal jadwal.' });
+      }
     }
 
     const updatedSchedule = await Schedule.findByIdAndUpdate(

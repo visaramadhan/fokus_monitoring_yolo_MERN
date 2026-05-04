@@ -4,7 +4,7 @@ import axios from 'axios';
 import { motion } from 'framer-motion';
 import { ArrowLeft, BookOpen, User, Calendar, GraduationCap, BarChart3, Download, FileText } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from 'recharts';
-import toast from 'react-hot-toast';
+import { useStatusModal } from '../contexts/StatusModalContext';
 
 interface MataKuliah {
   _id: string;
@@ -38,6 +38,7 @@ interface Meeting {
 
 export default function SubjectDetail() {
   const { id } = useParams<{ id: string }>();
+  const { showSuccess, showError } = useStatusModal();
   const [subject, setSubject] = useState<MataKuliah | null>(null);
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [loading, setLoading] = useState(true);
@@ -51,17 +52,17 @@ export default function SubjectDetail() {
 
   const fetchSubjectDetail = async () => {
     try {
-      const response = await axios.get(`/mata-kuliah/${id}`);
+      const response = await axios.get(`/api/mata-kuliah/${id}`);
       setSubject(response.data);
     } catch (error) {
       console.error('Error fetching subject detail:', error);
-      toast.error('Failed to fetch subject details');
+      showError('Gagal', 'Gagal mengambil detail mata kuliah.');
     }
   };
 
   const fetchSubjectMeetings = async () => {
     try {
-      const response = await axios.get('/pertemuan', {
+      const response = await axios.get('/api/pertemuan', {
         params: { mata_kuliah_id: id }
       });
       setMeetings(response.data);
@@ -86,10 +87,10 @@ export default function SubjectDetail() {
       a.click();
       window.URL.revokeObjectURL(url);
       
-      toast.success('PDF exported successfully');
+      showSuccess('Berhasil', 'PDF berhasil diunduh.');
     } catch (error) {
       console.error('Error exporting PDF:', error);
-      toast.error('Failed to export PDF');
+      showError('Gagal', 'Gagal export PDF.');
     }
   };
 
@@ -107,10 +108,10 @@ export default function SubjectDetail() {
       a.click();
       window.URL.revokeObjectURL(url);
       
-      toast.success('Excel exported successfully');
+      showSuccess('Berhasil', 'Excel berhasil diunduh.');
     } catch (error) {
       console.error('Error exporting Excel:', error);
-      toast.error('Failed to export Excel');
+      showError('Gagal', 'Gagal export Excel.');
     }
   };
 
@@ -133,26 +134,34 @@ export default function SubjectDetail() {
     );
   }
 
+  const subjectClasses = Array.isArray((subject as any).kelas)
+    ? ((subject as any).kelas as string[])
+    : typeof (subject as any).kelas === 'string'
+      ? [(subject as any).kelas as string]
+      : [];
+
   const averageFocus = meetings.length > 0 
-    ? meetings.reduce((sum, meeting) => sum + meeting.hasil_akhir_kelas.fokus, 0) / meetings.length
+    ? meetings.reduce((sum, meeting) => sum + Number(meeting.hasil_akhir_kelas?.fokus || 0), 0) / meetings.length
     : 0;
 
   const totalStudents = meetings.length > 0
-    ? Math.max(...meetings.map(m => m.hasil_akhir_kelas.jumlah_hadir))
+    ? Math.max(0, ...meetings.map(m => Number(m.hasil_akhir_kelas?.jumlah_hadir || 0)))
     : 0;
 
   // Prepare chart data
-  const focusTrendData = meetings.map(meeting => ({
-    meeting: `M${meeting.pertemuan_ke}`,
-    focus: Math.round(meeting.hasil_akhir_kelas.fokus),
-    attendance: meeting.hasil_akhir_kelas.jumlah_hadir,
-    date: new Date(meeting.tanggal).toLocaleDateString()
-  })).sort((a, b) => parseInt(a.meeting.slice(1)) - parseInt(b.meeting.slice(1)));
+  const focusTrendData = meetings
+    .map(meeting => ({
+      meeting: `M${meeting.pertemuan_ke}`,
+      focus: Math.round(Number(meeting.hasil_akhir_kelas?.fokus || 0)),
+      attendance: Number(meeting.hasil_akhir_kelas?.jumlah_hadir || 0),
+      date: new Date(meeting.tanggal).toLocaleDateString()
+    }))
+    .sort((a, b) => parseInt(a.meeting.slice(1)) - parseInt(b.meeting.slice(1)));
 
-  const classPerformanceData = subject.kelas.map(kelas => {
+  const classPerformanceData = subjectClasses.map(kelas => {
     const classMeetings = meetings.filter(m => m.kelas === kelas);
     const avgFocus = classMeetings.length > 0 
-      ? classMeetings.reduce((sum, m) => sum + m.hasil_akhir_kelas.fokus, 0) / classMeetings.length
+      ? classMeetings.reduce((sum, m) => sum + Number(m.hasil_akhir_kelas?.fokus || 0), 0) / classMeetings.length
       : 0;
     
     return {
@@ -254,7 +263,7 @@ export default function SubjectDetail() {
               <div className="flex items-center">
                 <User className="h-5 w-5 text-gray-400 mr-3" />
                 <div>
-                  <p className="text-sm font-medium text-gray-900">{subject.dosen_id.nama_lengkap}</p>
+                  <p className="text-sm font-medium text-gray-900">{subject.dosen_id?.nama_lengkap || '-'}</p>
                   <p className="text-sm text-gray-500">Full Name</p>
                 </div>
               </div>
@@ -263,7 +272,7 @@ export default function SubjectDetail() {
                   <span className="text-xs">@</span>
                 </div>
                 <div>
-                  <p className="text-sm font-medium text-gray-900">{subject.dosen_id.email}</p>
+                  <p className="text-sm font-medium text-gray-900">{subject.dosen_id?.email || '-'}</p>
                   <p className="text-sm text-gray-500">Email</p>
                 </div>
               </div>
@@ -272,7 +281,7 @@ export default function SubjectDetail() {
                   <span className="text-xs">🏢</span>
                 </div>
                 <div>
-                  <p className="text-sm font-medium text-gray-900">{subject.dosen_id.departemen}</p>
+                  <p className="text-sm font-medium text-gray-900">{subject.dosen_id?.departemen || '-'}</p>
                   <p className="text-sm text-gray-500">Department</p>
                 </div>
               </div>
@@ -290,7 +299,7 @@ export default function SubjectDetail() {
         <div className="mt-6 pt-6 border-t border-gray-200">
           <h3 className="text-lg font-semibold text-gray-900 mb-2">Classes</h3>
           <div className="flex flex-wrap gap-2">
-            {subject.kelas.map((kelas, index) => (
+            {subjectClasses.map((kelas, index) => (
               <span key={index} className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-blue-100 text-blue-800">
                 {kelas}
               </span>
@@ -364,7 +373,7 @@ export default function SubjectDetail() {
             </div>
             <div className="ml-4">
               <p className="text-sm font-medium text-gray-600">Classes Count</p>
-              <p className="text-2xl font-bold text-gray-900">{subject.kelas.length}</p>
+              <p className="text-2xl font-bold text-gray-900">{subjectClasses.length}</p>
             </div>
           </div>
         </motion.div>
@@ -492,8 +501,14 @@ export default function SubjectDetail() {
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {meetings.slice(0, 10).map((meeting) => (
-                  <tr key={meeting._id} className="hover:bg-gray-50">
+                {meetings.slice(0, 10).map((meeting) => {
+                  const focus = Number(meeting.hasil_akhir_kelas?.fokus || 0);
+                  const attendance = Number(meeting.hasil_akhir_kelas?.jumlah_hadir || 0);
+                  const color =
+                    focus >= 80 ? 'bg-green-500' : focus >= 60 ? 'bg-yellow-500' : 'bg-red-500';
+
+                  return (
+                    <tr key={meeting._id} className="hover:bg-gray-50">
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
                       Meeting {meeting.pertemuan_ke}
                     </td>
@@ -507,26 +522,24 @@ export default function SubjectDetail() {
                       <div className="flex items-center">
                         <div className="flex-1 bg-gray-200 rounded-full h-2 mr-2 max-w-20">
                           <div 
-                            className={`h-2 rounded-full ${
-                              meeting.hasil_akhir_kelas.fokus >= 80 ? 'bg-green-500' :
-                              meeting.hasil_akhir_kelas.fokus >= 60 ? 'bg-yellow-500' : 'bg-red-500'
-                            }`}
-                            style={{ width: `${meeting.hasil_akhir_kelas.fokus}%` }}
+                            className={`h-2 rounded-full ${color}`}
+                            style={{ width: `${Math.max(0, Math.min(100, focus))}%` }}
                           ></div>
                         </div>
                         <span className="text-sm font-medium text-gray-900">
-                          {Math.round(meeting.hasil_akhir_kelas.fokus)}%
+                          {Math.round(focus)}%
                         </span>
                       </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                      {meeting.hasil_akhir_kelas.jumlah_hadir}
+                      {attendance}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                       {new Date(meeting.tanggal).toLocaleDateString()}
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>

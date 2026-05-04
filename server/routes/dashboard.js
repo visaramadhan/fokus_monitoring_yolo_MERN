@@ -4,6 +4,7 @@ import Kelas from '../models/Kelas.js';
 import MataKuliah from '../models/MataKuliah.js';
 import User from '../models/User.js';
 import { auth } from '../middleware/auth.js';
+import mongoose from 'mongoose';
 
 const router = express.Router();
 
@@ -110,37 +111,72 @@ router.get('/overview', auth, async (req, res) => {
 router.get('/focus-trends', auth, async (req, res) => {
   try {
     let matchQuery = {};
+    const interval = String(req.query.interval || 'month').toLowerCase();
+    const subjectId = req.query.subjectId ? String(req.query.subjectId) : '';
     
-    // Filter by user role
     if (req.user.role === 'dosen') {
       matchQuery.dosen_id = req.user._id;
     }
+    if (subjectId) {
+      try {
+        matchQuery.mata_kuliah_id = new mongoose.Types.ObjectId(subjectId);
+      } catch (e) {
+        return res.status(400).json({ message: 'Invalid subjectId' });
+      }
+    }
 
-    const focusTrends = await Pertemuan.aggregate([
-      { $match: matchQuery },
-      {
-        $group: {
-          _id: {
-            month: { $month: '$tanggal' },
-            year: { $year: '$tanggal' }
-          },
-          averageFocus: { $avg: '$hasil_akhir_kelas.fokus' },
-          totalMeetings: { $sum: 1 }
-        }
-      },
-      { $sort: { '_id.year': 1, '_id.month': 1 } }
-    ]);
+    let focusTrends = [];
+    if (interval === 'week') {
+      focusTrends = await Pertemuan.aggregate([
+        { $match: matchQuery },
+        {
+          $group: {
+            _id: {
+              week: { $isoWeek: '$tanggal' },
+              year: { $isoWeekYear: '$tanggal' }
+            },
+            averageFocus: { $avg: '$hasil_akhir_kelas.fokus' },
+            totalMeetings: { $sum: 1 }
+          }
+        },
+        { $sort: { '_id.year': 1, '_id.week': 1 } }
+      ]);
+    } else {
+      focusTrends = await Pertemuan.aggregate([
+        { $match: matchQuery },
+        {
+          $group: {
+            _id: {
+              month: { $month: '$tanggal' },
+              year: { $year: '$tanggal' }
+            },
+            averageFocus: { $avg: '$hasil_akhir_kelas.fokus' },
+            totalMeetings: { $sum: 1 }
+          }
+        },
+        { $sort: { '_id.year': 1, '_id.month': 1 } }
+      ]);
+    }
 
     const monthNames = [
       'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
       'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
     ];
 
-    const formattedTrends = focusTrends.map(trend => ({
-      month: monthNames[trend._id.month - 1],
-      focus: Math.round(trend.averageFocus),
-      meetings: trend.totalMeetings
-    }));
+    let formattedTrends = [];
+    if (interval === 'week') {
+      formattedTrends = focusTrends.map(trend => ({
+        month: `${trend._id.year}-W${String(trend._id.week).padStart(2, '0')}`,
+        focus: Math.round(trend.averageFocus),
+        meetings: trend.totalMeetings
+      }));
+    } else {
+      formattedTrends = focusTrends.map(trend => ({
+        month: `${trend._id.year}-${String(trend._id.month).padStart(2, '0')}`,
+        focus: Math.round(trend.averageFocus),
+        meetings: trend.totalMeetings
+      }));
+    }
 
     res.json(formattedTrends);
   } catch (error) {

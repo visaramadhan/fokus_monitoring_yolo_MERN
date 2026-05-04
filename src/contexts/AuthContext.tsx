@@ -22,13 +22,6 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-// Configure axios defaults
-<<<<<<< HEAD
-axios.defaults.baseURL = '/api';
-=======
-axios.defaults.baseURL = 'http://localhost:5002';
->>>>>>> 8fb5c24ea2c3fe76469a6acbe3c9303fb840c865
-
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
@@ -77,7 +70,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const getCurrentUser = async () => {
     try {
-      const response = await axios.get('/auth/me');
+      const response = await axios.get('/api/auth/me');
       setUser(response.data.user);
     } catch (error) {
       console.error('Error getting current user:', error);
@@ -89,7 +82,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const login = async (username: string, password: string) => {
     try {
-      const response = await axios.post('/auth/login', { username, password });
+      const response = await axios.post('/api/auth/login', { username, password });
       const { token, user } = response.data;
       
       localStorage.setItem('token', token);
@@ -102,7 +95,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const register = async (userData: any) => {
     try {
-      const response = await axios.post('/auth/register', userData);
+      const response = await axios.post('/api/auth/register', userData);
       const { token, user } = response.data;
       
       localStorage.setItem('token', token);

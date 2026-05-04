@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { useForm } from 'react-hook-form';
 import { Mail, ArrowLeft, LayoutDashboard } from 'lucide-react';
-import toast from 'react-hot-toast';
+import { useStatusModal } from '../contexts/StatusModalContext';
 
 interface ForgotPasswordForm {
   email: string;
@@ -12,6 +12,7 @@ interface ForgotPasswordForm {
 export default function ForgotPassword() {
   const [isLoading, setIsLoading] = useState(false);
   const [emailSent, setEmailSent] = useState(false);
+  const { showSuccess, showError } = useStatusModal();
   
   const { register, handleSubmit, formState: { errors } } = useForm<ForgotPasswordForm>();
 
@@ -21,9 +22,9 @@ export default function ForgotPassword() {
       // Simulate API call
       await new Promise(resolve => setTimeout(resolve, 2000));
       setEmailSent(true);
-      toast.success('Password reset instructions sent to your email!');
+      showSuccess('Berhasil', 'Instruksi reset password sudah dikirim ke email.');
     } catch (error: any) {
-      toast.error('Failed to send reset email. Please try again.');
+      showError('Gagal', 'Gagal mengirim email reset. Silakan coba lagi.');
     } finally {
       setIsLoading(false);
     }

@@ -3,7 +3,7 @@ import { useParams, Link } from 'react-router-dom';
 import axios from 'axios';
 import { ArrowLeft, Calendar, Clock, Users, BarChart3, Eye, EyeOff, Download, Edit, Save, X } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts';
-import toast from 'react-hot-toast';
+import { useStatusModal } from '../contexts/StatusModalContext';
 
 interface StudentFocus {
   id_siswa: string;
@@ -46,6 +46,7 @@ interface Meeting {
 
 export default function MeetingDetail() {
   const { id } = useParams<{ id: string }>();
+  const { showSuccess, showError } = useStatusModal();
   const [meeting, setMeeting] = useState<Meeting | null>(null);
   const [loading, setLoading] = useState(true);
   const [showAllStudents, setShowAllStudents] = useState(false);
@@ -60,11 +61,11 @@ export default function MeetingDetail() {
 
   const fetchMeetingDetail = async () => {
     try {
-      const response = await axios.get(`/pertemuan/${id}`);
+      const response = await axios.get(`/api/pertemuan/${id}`);
       setMeeting(response.data);
     } catch (error) {
       console.error('Error fetching meeting detail:', error);
-      toast.error('Failed to fetch meeting details');
+      showError('Gagal', 'Gagal mengambil detail meeting.');
     } finally {
       setLoading(false);
     }
@@ -75,7 +76,7 @@ export default function MeetingDetail() {
     
     // Validate input
     if (newFocusRate < 0 || newFocusRate > 100) {
-      toast.error('Focus rate must be between 0 and 100');
+      showError('Validasi', 'Focus rate harus di antara 0 dan 100.');
       return;
     }
 
@@ -88,7 +89,7 @@ export default function MeetingDetail() {
         }
       };
 
-      await axios.put(`/pertemuan/${id}`, updatedData);
+      await axios.put(`/api/pertemuan/${id}`, updatedData);
       
       setMeeting(prev => prev ? {
         ...prev,
@@ -96,16 +97,16 @@ export default function MeetingDetail() {
       } : null);
       
       setIsEditingFocus(false);
-      toast.success('Focus rate updated successfully');
+      showSuccess('Berhasil', 'Focus rate berhasil diupdate.');
     } catch (error) {
       console.error('Error updating focus rate:', error);
-      toast.error('Failed to update focus rate');
+      showError('Gagal', 'Gagal update focus rate.');
     }
   };
 
   const exportToPDF = async () => {
     try {
-      const response = await axios.get(`/export/pdf/meeting/${id}`, {
+      const response = await axios.get(`/api/export/pdf/meeting/${id}`, {
         responseType: 'blob'
       });
       
@@ -117,16 +118,16 @@ export default function MeetingDetail() {
       a.click();
       window.URL.revokeObjectURL(url);
       
-      toast.success('PDF exported successfully');
+      showSuccess('Berhasil', 'PDF berhasil diunduh.');
     } catch (error) {
       console.error('Error exporting PDF:', error);
-      toast.error('Failed to export PDF');
+      showError('Gagal', 'Gagal export PDF.');
     }
   };
 
   const exportToExcel = async () => {
     try {
-      const response = await axios.get(`/export/excel/meeting/${id}`, {
+      const response = await axios.get(`/api/export/excel/meeting/${id}`, {
         responseType: 'blob'
       });
       
@@ -138,10 +139,10 @@ export default function MeetingDetail() {
       a.click();
       window.URL.revokeObjectURL(url);
       
-      toast.success('Excel exported successfully');
+      showSuccess('Berhasil', 'Excel berhasil diunduh.');
     } catch (error) {
       console.error('Error exporting Excel:', error);
-      toast.error('Failed to export Excel');
+      showError('Gagal', 'Gagal export Excel.');
     }
   };
 

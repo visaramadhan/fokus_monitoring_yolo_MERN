@@ -5,6 +5,112 @@ import XLSX from 'xlsx';
 
 const router = express.Router();
 
+function parseTimeOnDate(baseDate, timeValue) {
+  if (!timeValue) return null;
+  if (timeValue instanceof Date) return isNaN(timeValue.getTime()) ? null : timeValue;
+
+  const base = baseDate ? new Date(baseDate) : new Date();
+  if (isNaN(base.getTime())) return null;
+
+  if (typeof timeValue === 'number') {
+    const dt = new Date(timeValue);
+    return isNaN(dt.getTime()) ? null : dt;
+  }
+
+  if (typeof timeValue === 'string') {
+    const trimmed = timeValue.trim();
+    const asDate = new Date(trimmed);
+    if (!isNaN(asDate.getTime())) return asDate;
+
+    const match = trimmed.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+    if (match) {
+      const hours = Number(match[1]);
+      const minutes = Number(match[2]);
+      const seconds = match[3] ? Number(match[3]) : 0;
+      if (hours >= 0 && hours <= 23 && minutes >= 0 && minutes <= 59 && seconds >= 0 && seconds <= 59) {
+        const dt = new Date(base);
+        dt.setHours(hours, minutes, seconds, 0);
+        return dt;
+      }
+    }
+  }
+
+  return null;
+}
+
+function normalizeDurationMs(value, fallbackMs) {
+  const v = Number(value);
+  if (!Number.isFinite(v) || v <= 0) return fallbackMs;
+  if (v < 1000) return Math.round(v * 60000);
+  return Math.round(v);
+}
+
+function averageFocusPercentage(detectionData) {
+  if (!Array.isArray(detectionData) || detectionData.length === 0) return 0;
+  const values = detectionData
+    .map(d => Number(d?.focusPercentage))
+    .filter(n => Number.isFinite(n));
+  if (values.length === 0) return 0;
+  return values.reduce((a, b) => a + b, 0) / values.length;
+}
+
+function analyzeLabels(detectionData) {
+  const totals = new Map();
+  let totalDetections = 0;
+
+  if (Array.isArray(detectionData)) {
+    detectionData.forEach(d => {
+      const td = Number(d?.totalDetections);
+      if (Number.isFinite(td) && td > 0) totalDetections += td;
+
+      const lc = d?.label_counts || d?.labelCounts || null;
+      if (lc && typeof lc === 'object') {
+        Object.entries(lc).forEach(([label, count]) => {
+          const c = Number(count);
+          if (!Number.isFinite(c) || c <= 0) return;
+          totals.set(label, (totals.get(label) || 0) + c);
+        });
+      }
+    });
+  }
+
+  if (totals.size === 0 && Array.isArray(detectionData)) {
+    const known = [
+      ['focused', 'focusedCount'],
+      ['not_focused', 'notFocusedCount'],
+      ['yawning', 'yawningCount'],
+      ['sleeping', 'sleepingCount'],
+      ['using_phone', 'phoneUsingCount'],
+      ['chatting', 'chattingCount'],
+      ['writing', 'writingCount']
+    ];
+
+    known.forEach(([label, key]) => {
+      const sum = detectionData.reduce((acc, d) => {
+        const v = Number(d?.[key]);
+        return Number.isFinite(v) ? acc + v : acc;
+      }, 0);
+      if (sum > 0) totals.set(label, sum);
+    });
+    totalDetections = Math.max(
+      totalDetections,
+      detectionData.reduce((acc, d) => {
+        const v = Number(d?.totalDetections);
+        return Number.isFinite(v) ? acc + v : acc;
+      }, 0)
+    );
+  }
+
+  return Array.from(totals.entries())
+    .map(([label, count]) => ({
+      gesture_type: label,
+      total_count: count,
+      average_duration: 0,
+      percentage_of_session: totalDetections > 0 ? (count / totalDetections) * 100 : 0
+    }))
+    .sort((a, b) => b.total_count - a.total_count);
+}
+
 // Create new session record
 router.post('/', auth, async (req, res) => {
   try {
@@ -23,18 +129,37 @@ router.post('/', auth, async (req, res) => {
       durasi
     } = req.body;
 
-    const sessionRecord = new SessionRecord({
+    const baseDate = tanggal ? new Date(tanggal) : new Date();
+    const jamMulaiDate = parseTimeOnDate(baseDate, jamMulai) || new Date(baseDate);
+    const jamSelesaiDate = parseTimeOnDate(baseDate, jamSelesai) || new Date(jamMulaiDate);
+
+    const safeSeatData = Array.isArray(seatData) ? seatData : [];
+    const safeDetectionData = Array.isArray(detectionData) ? detectionData : [];
+
+    const durationFromSummaryMs = Number(summary?.sessionDuration);
+    const sessionDurationMs = Number.isFinite(durationFromSummaryMs) && durationFromSummaryMs > 0
+      ? durationFromSummaryMs
+      : Math.max(1, jamSelesaiDate.getTime() - jamMulaiDate.getTime());
+    const durasiMs = normalizeDurationMs(durasi, sessionDurationMs);
+
+    const peakFocusTime = safeSeatData.length > 0
+      ? Math.max(...safeSeatData.map(s => Number(s?.total_focus_duration) || 0))
+      : 0;
+
+    const avgFocusPct = averageFocusPercentage(safeDetectionData);
+
+    const payload = {
       sessionId,
       sessionName,
       kelas: className,
       mata_kuliah: subjectName,
       dosen_id: dosenId || req.user._id,
-      tanggal: tanggal || new Date(),
-      jam_mulai: jamMulai || new Date(),
-      jam_selesai: jamSelesai || new Date(),
-      durasi: durasi || summary.sessionDuration,
-      seat_data: seatData.map(seat => ({
-        seat_id: seat.seat_id,
+      tanggal: baseDate,
+      jam_mulai: jamMulaiDate,
+      jam_selesai: jamSelesaiDate,
+      durasi: durasiMs,
+      seat_data: safeSeatData.map(seat => ({
+        seat_id: Number(seat.seat_id),
         student_id: seat.student_id || `Student-${seat.seat_id}`,
         position: {
           x: seat.x,
@@ -43,22 +168,31 @@ router.post('/', auth, async (req, res) => {
           height: seat.height
         },
         focus_duration: seat.total_focus_duration,
-        focus_percentage: seat.total_focus_duration > 0 ? 
-          Math.round((seat.total_focus_duration / summary.sessionDuration) * 100) : 0,
-        gesture_history: generateGestureHistory(seat, detectionData),
-        final_status: seat.face_detected ? 'Focused' : 'Not Focused'
+        focus_percentage: seat.total_focus_duration > 0
+          ? Math.round((seat.total_focus_duration / sessionDurationMs) * 100)
+          : 0,
+        gesture_history: generateGestureHistory(seat, safeDetectionData),
+        final_status: seat.is_occupied ? (seat.total_focus_duration > 0 ? 'Focused' : 'Not Focused') : 'Absent'
       })),
       detection_summary: {
-        total_detections: detectionData.length,
-        average_focus_percentage: summary.averageFocusTime,
-        peak_focus_time: Math.max(...seatData.map(s => s.total_focus_duration)),
-        total_session_duration: summary.sessionDuration
+        total_detections: safeDetectionData.length,
+        average_focus_percentage: avgFocusPct,
+        peak_focus_time: peakFocusTime,
+        total_session_duration: sessionDurationMs
       },
-      gesture_analysis: analyzeGestures(seatData, detectionData)
-    });
+      gesture_analysis: analyzeLabels(safeDetectionData)
+    };
 
+    const existing = await SessionRecord.findOne({ sessionId });
+    if (existing) {
+      Object.assign(existing, payload);
+      await existing.save();
+      return res.status(200).json(existing);
+    }
+
+    const sessionRecord = new SessionRecord(payload);
     await sessionRecord.save();
-    res.status(201).json(sessionRecord);
+    return res.status(201).json(sessionRecord);
   } catch (error) {
     console.error('Error creating session record:', error);
     res.status(500).json({ message: error.message });
@@ -186,37 +320,6 @@ function generateGestureHistory(seat, detectionData) {
   }
   
   return history;
-}
-
-// Helper function to analyze gestures
-function analyzeGestures(seatData, detectionData) {
-  const gestureTypes = ['focused', 'looking_away', 'sleeping', 'using_phone', 'chatting'];
-  const analysis = [];
-  
-  gestureTypes.forEach(gestureType => {
-    const totalCount = seatData.reduce((sum, seat) => {
-      const gestureHistory = generateGestureHistory(seat, detectionData);
-      const gestureCount = gestureHistory.filter(g => g.gesture === gestureType).reduce((s, g) => s + g.count, 0);
-      return sum + gestureCount;
-    }, 0);
-    
-    const totalDuration = seatData.reduce((sum, seat) => {
-      const gestureHistory = generateGestureHistory(seat, detectionData);
-      const gestureDuration = gestureHistory.filter(g => g.gesture === gestureType).reduce((s, g) => s + g.duration, 0);
-      return sum + gestureDuration;
-    }, 0);
-    
-    const sessionDuration = detectionData.length * 2000; // 2 seconds per detection
-    
-    analysis.push({
-      gesture_type: gestureType,
-      total_count: totalCount,
-      average_duration: totalCount > 0 ? totalDuration / totalCount : 0,
-      percentage_of_session: sessionDuration > 0 ? (totalDuration / sessionDuration) * 100 : 0
-    });
-  });
-  
-  return analysis;
 }
 
 export default router;

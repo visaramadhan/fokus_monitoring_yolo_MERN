@@ -5,7 +5,7 @@ import { useForm } from 'react-hook-form';
 import { Eye, EyeOff, LayoutDashboard, Zap } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import AnimatedBackground from '../components/AnimatedBackground';
-import toast from 'react-hot-toast';
+import { useStatusModal } from '../contexts/StatusModalContext';
 
 interface LoginForm {
   username: string;
@@ -16,6 +16,7 @@ export default function Login() {
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const { login } = useAuth();
+  const { showSuccess, showError } = useStatusModal();
   const navigate = useNavigate();
   
   const { register, handleSubmit, formState: { errors } } = useForm<LoginForm>();
@@ -24,10 +25,10 @@ export default function Login() {
     setIsLoading(true);
     try {
       await login(data.username, data.password);
-      toast.success('Welcome back!');
+      showSuccess('Berhasil', 'Login berhasil.');
       navigate('/dashboard');
     } catch (error: any) {
-      toast.error(error.message || 'Login failed');
+      showError('Gagal Login', error.message || 'Login gagal.');
     } finally {
       setIsLoading(false);
     }

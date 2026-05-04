@@ -1,5 +1,10 @@
 import express from 'express';
 import Settings from '../models/Settings.js';
+import User from '../models/User.js';
+import Kelas from '../models/Kelas.js';
+import MataKuliah from '../models/MataKuliah.js';
+import Pertemuan from '../models/Pertemuan.js';
+import { createDummyData, purgeAllData, purgeDummyData } from '../utils/seedData.js';
 import { auth, adminAuth } from '../middleware/auth.js';
 import multer from 'multer';
 import path from 'path';
@@ -123,5 +128,59 @@ function getModelType(filename) {
       return 'unknown';
   }
 }
+
+// Admin reseed endpoint
+router.post('/reseed', adminAuth, async (req, res) => {
+  try {
+    const { confirm } = req.body || {};
+    if (!confirm) {
+      return res.status(400).json({ message: 'Confirmation required: set { confirm: true }' });
+    }
+    const deleted = await Promise.all([
+      User.deleteMany({}),
+      Kelas.deleteMany({}),
+      MataKuliah.deleteMany({}),
+      Pertemuan.deleteMany({})
+    ]);
+    await createDummyData();
+    res.json({
+      message: 'Reseed completed',
+      deleted: {
+        users: deleted[0]?.deletedCount ?? 0,
+        kelas: deleted[1]?.deletedCount ?? 0,
+        mataKuliah: deleted[2]?.deletedCount ?? 0,
+        pertemuan: deleted[3]?.deletedCount ?? 0
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message || 'Reseed failed' });
+  }
+});
+
+router.post('/purge-dummy', adminAuth, async (req, res) => {
+  try {
+    const { confirm } = req.body || {};
+    if (!confirm) {
+      return res.status(400).json({ message: 'Confirmation required: set { confirm: true }' });
+    }
+    await purgeDummyData();
+    res.json({ message: 'Dummy data cleared' });
+  } catch (error) {
+    res.status(500).json({ message: error.message || 'Purge dummy failed' });
+  }
+});
+
+router.post('/purge-all', adminAuth, async (req, res) => {
+  try {
+    const { confirm } = req.body || {};
+    if (!confirm) {
+      return res.status(400).json({ message: 'Confirmation required: set { confirm: true }' });
+    }
+    await purgeAllData();
+    res.json({ message: 'All data cleared' });
+  } catch (error) {
+    res.status(500).json({ message: error.message || 'Purge all failed' });
+  }
+});
 
 export default router;

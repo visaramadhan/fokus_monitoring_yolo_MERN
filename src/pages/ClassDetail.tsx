@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import axios from 'axios';
 import { ArrowLeft, Users, Calendar, GraduationCap, BarChart3, Download } from 'lucide-react';
-import toast from 'react-hot-toast';
+import { useStatusModal } from '../contexts/StatusModalContext';
 
 interface Student {
   id_mahasiswa: string;
@@ -36,6 +36,7 @@ interface Meeting {
 
 export default function ClassDetail() {
   const { id } = useParams<{ id: string }>();
+  const { showSuccess, showError } = useStatusModal();
   const [kelas, setKelas] = useState<Kelas | null>(null);
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [loading, setLoading] = useState(true);
@@ -44,28 +45,34 @@ export default function ClassDetail() {
   useEffect(() => {
     if (id) {
       fetchClassDetail();
-      fetchClassMeetings();
     }
   }, [id]);
 
+  useEffect(() => {
+    if (kelas?.nama_kelas) {
+      fetchClassMeetings(kelas.nama_kelas);
+    }
+  }, [kelas?.nama_kelas]);
+
   const fetchClassDetail = async () => {
     try {
-      const response = await axios.get(`/kelas/${id}`);
+      const response = await axios.get(`/api/kelas/${id}`);
       setKelas(response.data);
     } catch (error) {
       console.error('Error fetching class detail:', error);
-      toast.error('Failed to fetch class details');
+      showError('Gagal', 'Gagal mengambil detail kelas.');
     }
   };
 
-  const fetchClassMeetings = async () => {
+  const fetchClassMeetings = async (kelasName: string) => {
     try {
-      const response = await axios.get('/pertemuan', {
-        params: { kelas: kelas?.nama_kelas }
+      const response = await axios.get('/api/pertemuan', {
+        params: { kelas: kelasName }
       });
       setMeetings(response.data);
     } catch (error) {
       console.error('Error fetching meetings:', error);
+      showError('Gagal', 'Gagal mengambil data pertemuan kelas.');
     } finally {
       setLoading(false);
     }
@@ -73,7 +80,7 @@ export default function ClassDetail() {
 
   const exportToPDF = async () => {
     try {
-      const response = await axios.get(`/export/pdf/class/${id}`, {
+      const response = await axios.get(`/api/export/pdf/class/${id}`, {
         responseType: 'blob'
       });
       
@@ -85,10 +92,10 @@ export default function ClassDetail() {
       a.click();
       window.URL.revokeObjectURL(url);
       
-      toast.success('PDF exported successfully');
+      showSuccess('Berhasil', 'PDF berhasil diunduh.');
     } catch (error) {
       console.error('Error exporting PDF:', error);
-      toast.error('Failed to export PDF');
+      showError('Gagal', 'Gagal export PDF.');
     }
   };
 

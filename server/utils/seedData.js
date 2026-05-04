@@ -2,12 +2,73 @@ import User from '../models/User.js';
 import Kelas from '../models/Kelas.js';
 import MataKuliah from '../models/MataKuliah.js';
 import Pertemuan from '../models/Pertemuan.js';
+import LiveSession from '../models/LiveSession.js';
+import SessionRecord from '../models/SessionRecord.js';
 import mongoose from 'mongoose';
 
-const Schedule = mongoose.model('Schedule');
+export async function purgeAllData() {
+  const ScheduleModel = (() => {
+    try {
+      return mongoose.model('Schedule');
+    } catch (e) {
+      return null;
+    }
+  })();
+
+  const operations = [
+    SessionRecord.deleteMany({}),
+    LiveSession.deleteMany({}),
+    Pertemuan.deleteMany({}),
+    MataKuliah.deleteMany({}),
+    Kelas.deleteMany({}),
+    User.deleteMany({})
+  ];
+  if (ScheduleModel) operations.push(ScheduleModel.deleteMany({}));
+
+  await Promise.allSettled(operations);
+}
+
+export async function purgeDummyData() {
+  const ScheduleModel = (() => {
+    try {
+      return mongoose.model('Schedule');
+    } catch (e) {
+      return null;
+    }
+  })();
+
+  const dummyUsers = await User.find({
+    $or: [
+      { email: /@university\.ac\.id$/i },
+      { username: /^dosen\d+$/i },
+      { username: /^admin$/i, email: /@university\.ac\.id$/i }
+    ]
+  }).select('_id');
+  const dummyUserIds = dummyUsers.map(u => u._id);
+
+  if (dummyUserIds.length === 0) return;
+
+  await Promise.allSettled([
+    SessionRecord.deleteMany({ dosen_id: { $in: dummyUserIds } }),
+    LiveSession.deleteMany({ dosen_id: { $in: dummyUserIds } }),
+    Pertemuan.deleteMany({ dosen_id: { $in: dummyUserIds } }),
+    MataKuliah.deleteMany({ dosen_id: { $in: dummyUserIds } }),
+    ScheduleModel ? ScheduleModel.deleteMany({ dosen_id: { $in: dummyUserIds } }) : Promise.resolve()
+  ]);
+
+  await Promise.allSettled([
+    Kelas.deleteMany({ tahun_ajaran: '2024/2025' }),
+    User.deleteMany({ _id: { $in: dummyUserIds } })
+  ]);
+}
 
 export async function createDummyData() {
   try {
+    if (String(process.env.ENABLE_DUMMY_DATA).toLowerCase() !== 'true') {
+      console.log('Dummy data seeding is disabled (set ENABLE_DUMMY_DATA=true to enable)');
+      return;
+    }
+
     // Check if data already exists
     const userCount = await User.countDocuments();
     if (userCount > 0) {
@@ -107,28 +168,107 @@ export async function createDummyData() {
       mataKuliahData.push(mataKuliah);
     }
 
-    // Create meetings for each subject
+    // Create meetings and schedules for each subject
+    // Define semester start date (e.g., roughly 4 months ago to simulate a full semester)
+    // Environment date is 2026-01-07, so let's say semester started August 2025 (as requested)
+    const semesterStart = new Date('2025-08-04T08:00:00');
+
+    // Create Schedule Model reference (safe check)
+    let ScheduleModel;
+    try {
+      ScheduleModel = mongoose.model('Schedule');
+    } catch (e) {
+      const scheduleSchema = new mongoose.Schema({
+        kelas: { type: String, required: true },
+        mata_kuliah: { type: String, required: true },
+        mata_kuliah_id: { type: mongoose.Schema.Types.ObjectId, ref: 'MataKuliah', required: true },
+        dosen_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+        dosen_name: { type: String, required: true },
+        tanggal: { type: Date, required: true },
+        jam_mulai: { type: String, required: true },
+        jam_selesai: { type: String, required: true },
+        durasi: { type: Number, required: true },
+        pertemuan_ke: { type: Number, required: true, min: 1 },
+        topik: { type: String, default: '' },
+        ruangan: { type: String, default: '' },
+        status: { type: String, enum: ['scheduled', 'ongoing', 'completed', 'cancelled'], default: 'scheduled' },
+        seat_positions: [{
+          seat_id: { type: Number, required: true },
+          x: { type: Number, required: true },
+          y: { type: Number, required: true },
+          width: { type: Number, required: true },
+          height: { type: Number, required: true },
+          student_id: { type: String, required: true }
+        }]
+      }, { timestamps: true });
+      ScheduleModel = mongoose.model('Schedule', scheduleSchema);
+    }
+
     for (let subjectIndex = 0; subjectIndex < 8; subjectIndex++) {
       const mataKuliah = mataKuliahData[subjectIndex];
       const dosen = dosenUsers[subjectIndex];
       
+      // Assign a specific weekday for this subject (Mon-Fri) to be realistic
+      // subjectIndex 0 -> Mon, 1 -> Tue, 2 -> Wed, 3 -> Thu, 4 -> Fri, 5 -> Mon, etc.
+      const dayOffset = (subjectIndex % 5); 
+      
       // Create meetings for each class in the subject
       for (const kelasName of mataKuliah.kelas) {
-        for (let pertemuanKe = 1; pertemuanKe <= 6; pertemuanKe++) {
+        
+        // Generate 14 meetings (14 weeks)
+        for (let pertemuanKe = 1; pertemuanKe <= 14; pertemuanKe++) {
           const dataFokus = [];
           
           // Get students from the class
           const kelas = kelasData.find(k => k.nama_kelas === kelasName);
           if (!kelas) continue;
           
+          // Determine baseline by subject
+          const subjectBaselineMap = {
+            'Pemrograman Web': 0.75,
+            'Database Management': 0.70,
+            'Algoritma dan Struktur Data': 0.65, // Harder subject, lower focus
+            'Jaringan Komputer': 0.68,
+            'Sistem Informasi Manajemen': 0.78,
+            'Rekayasa Perangkat Lunak': 0.74,
+            'Analisis dan Perancangan Sistem': 0.72,
+            'Mobile Programming': 0.80 // Fun subject, higher focus
+          };
+          const subjectBaseline = subjectBaselineMap[mataKuliah.nama] ?? 0.72;
+          
+          // VARIATION LOGIC:
+          // 1. Week Trend: Sine wave to simulate "Naik Turun" over the semester
+          //    Cycles every ~7 weeks, so 14 weeks has 2 peaks/valleys
+          const weekTrend = Math.sin((pertemuanKe / 14) * Math.PI * 3) * 0.12; 
+          
+          // 2. Class Factor: Slight variation per class
+          const kelasFactor = kelasName.includes('A') ? 0.03 : -0.02;
+          
+          // 3. Daily Random Noise: Weather, mood, etc.
+          const dailyNoise = (Math.random() * 0.1) - 0.05;
+
+          // Calculate target probability for this meeting
+          let targetProbability = subjectBaseline + weekTrend + kelasFactor + dailyNoise;
+          targetProbability = Math.max(0.3, Math.min(0.95, targetProbability)); // Clamp 0.3 - 0.95
+
+          // Random attendance between 20-30
+          const attendanceCount = 20 + Math.floor(Math.random() * 11);
+          
           // Generate focus data for each student
-          for (let mahasiswaIndex = 0; mahasiswaIndex < 25; mahasiswaIndex++) { // Random attendance
+          for (let mahasiswaIndex = 0; mahasiswaIndex < attendanceCount; mahasiswaIndex++) {
             const mahasiswa = kelas.mahasiswa[mahasiswaIndex];
+            
+            // Student personal variation
+            const studentAbility = (Math.random() * 0.2) - 0.1;
             
             // Generate random focus pattern (12 sessions of 5 minutes each)
             const fokusPattern = [];
             for (let session = 0; session < 12; session++) {
-              fokusPattern.push(Math.random() > 0.25 ? 1 : 0); // 75% chance of being focused
+              // Session fatigue: students focus less at the end of class
+              const fatigue = session > 8 ? -0.1 : 0;
+              
+              const sessionChance = targetProbability + studentAbility + fatigue + ((Math.random() * 0.1) - 0.05);
+              fokusPattern.push(Math.random() < sessionChance ? 1 : 0);
             }
             
             const jumlahSesiFokus = fokusPattern.filter(f => f === 1).length;
@@ -151,8 +291,19 @@ export async function createDummyData() {
             });
           }
 
-          const meetingDate = new Date(2024, 2, (pertemuanKe - 1) * 7 + (subjectIndex * 2)); // Spread meetings
+          // Date Calculation: Start Date + (Week * 7) + DayOffset
+          // Also add random hour (08:00, 10:00, 13:00)
+          const meetingDate = new Date(semesterStart);
+          meetingDate.setDate(semesterStart.getDate() + ((pertemuanKe - 1) * 7) + dayOffset);
           
+          // Set time
+          const startHour = 8 + (subjectIndex % 3) * 3; // 8, 11, 14
+          meetingDate.setHours(startHour, 0, 0, 0);
+
+          const jamMulai = `${startHour.toString().padStart(2, '0')}:00`;
+          const jamSelesai = `${(startHour + 2).toString().padStart(2, '0')}:00`; // 2 hours duration
+
+          // Create Pertemuan (Historical Data)
           const pertemuan = new Pertemuan({
             tanggal: meetingDate,
             pertemuan_ke: pertemuanKe,
@@ -160,45 +311,35 @@ export async function createDummyData() {
             mata_kuliah: mataKuliah.nama,
             mata_kuliah_id: mataKuliah._id,
             dosen_id: dosen._id,
-            durasi_pertemuan: 100,
-            topik: `Pertemuan ${pertemuanKe} - ${mataKuliah.nama}`,
+            durasi_pertemuan: 100, // minutes
+            topik: `Pertemuan ${pertemuanKe} - ${mataKuliah.nama} - Minggu ${pertemuanKe}`,
             data_fokus: dataFokus,
-            catatan: `Pertemuan ${pertemuanKe} berjalan dengan baik. Materi disampaikan dengan interaktif.`
+            catatan: `Catatan pertemuan minggu ke-${pertemuanKe}. Partisipasi siswa ${targetProbability > 0.7 ? 'aktif' : 'cukup'}.`
           });
           
           await pertemuan.save();
-        }
-      }
-    }
 
-    // Create schedule data
-    const scheduleData = [];
-    for (let subjectIndex = 0; subjectIndex < 8; subjectIndex++) {
-      const mataKuliah = mataKuliahData[subjectIndex];
-      const dosen = dosenUsers[subjectIndex];
-      
-      for (const kelasName of mataKuliah.kelas) {
-        for (let week = 1; week <= 4; week++) { // 4 weeks of schedules
-          const scheduleDate = new Date(2024, 3, week * 7 + subjectIndex); // April 2024
+          // Create Schedule (Calendar Data) - mirroring the meeting
+          // If date is in past, status = completed. If future, scheduled.
+          const isPast = meetingDate < new Date();
           
-          const schedule = new Schedule({
+          const schedule = new ScheduleModel({
             kelas: kelasName,
             mata_kuliah: mataKuliah.nama,
             mata_kuliah_id: mataKuliah._id,
             dosen_id: dosen._id,
             dosen_name: dosen.nama_lengkap,
-            tanggal: scheduleDate,
-            jam_mulai: `${8 + (subjectIndex % 4) * 2}:00`,
-            jam_selesai: `${9 + (subjectIndex % 4) * 2}:40`,
+            tanggal: meetingDate,
+            jam_mulai: jamMulai,
+            jam_selesai: jamSelesai,
             durasi: 100,
-            pertemuan_ke: week + 6, // Continue from existing meetings
-            topik: `Materi Minggu ${week} - ${mataKuliah.nama}`,
-            ruangan: `R${101 + subjectIndex}`,
-            status: week <= 2 ? 'completed' : 'scheduled'
+            pertemuan_ke: pertemuanKe,
+            topik: `Materi Minggu ${pertemuanKe} - ${mataKuliah.nama}`,
+            ruangan: `R${200 + (subjectIndex % 5)}`,
+            status: isPast ? 'completed' : 'scheduled'
           });
           
           await schedule.save();
-          scheduleData.push(schedule);
         }
       }
     }

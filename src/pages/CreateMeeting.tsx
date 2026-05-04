@@ -3,7 +3,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import axios from 'axios';
 import { ArrowLeft, Calendar, Clock, Users, BookOpen } from 'lucide-react';
-import toast from 'react-hot-toast';
+import { useStatusModal } from '../contexts/StatusModalContext';
 
 interface CreateMeetingForm {
   tanggal: string;
@@ -36,6 +36,7 @@ interface Kelas {
 
 export default function CreateMeeting() {
   const navigate = useNavigate();
+  const { showSuccess, showError } = useStatusModal();
   const [subjects, setSubjects] = useState<MataKuliah[]>([]);
   const [classes, setClasses] = useState<Kelas[]>([]);
   const [selectedSubject, setSelectedSubject] = useState<MataKuliah | null>(null);
@@ -74,7 +75,7 @@ export default function CreateMeeting() {
 
   const fetchSubjects = async () => {
     try {
-      const response = await axios.get('/mata-kuliah');
+      const response = await axios.get('/api/mata-kuliah');
       setSubjects(response.data);
     } catch (error) {
       console.error('Error fetching subjects:', error);
@@ -83,7 +84,7 @@ export default function CreateMeeting() {
 
   const fetchClasses = async () => {
     try {
-      const response = await axios.get('/kelas');
+      const response = await axios.get('/api/kelas');
       setClasses(response.data);
     } catch (error) {
       console.error('Error fetching classes:', error);
@@ -121,7 +122,7 @@ export default function CreateMeeting() {
 
   const onSubmit = async (data: CreateMeetingForm) => {
     if (!selectedSubject || !selectedClass) {
-      toast.error('Please select both subject and class');
+      showError('Gagal', 'Pilih mata kuliah dan kelas terlebih dahulu.');
       return;
     }
 
@@ -145,12 +146,12 @@ export default function CreateMeeting() {
         }
       };
 
-      const response = await axios.post('/pertemuan', meetingData);
-      toast.success('Meeting created successfully');
+      const response = await axios.post('/api/pertemuan', meetingData);
+      showSuccess('Berhasil', 'Meeting berhasil dibuat.');
       navigate(`/meetings/${response.data._id}`);
     } catch (error: any) {
       console.error('Error creating meeting:', error);
-      toast.error(error.response?.data?.message || 'Failed to create meeting');
+      showError('Gagal', error.response?.data?.message || error.message || 'Gagal membuat meeting.');
     } finally {
       setLoading(false);
     }

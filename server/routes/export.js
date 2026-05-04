@@ -7,6 +7,7 @@ import MataKuliah from '../models/MataKuliah.js';
 import { auth } from '../middleware/auth.js';
 import XLSX from 'xlsx';
 import PDFDocument from 'pdfkit';
+import mongoose from 'mongoose';
 
 const router = express.Router();
 
@@ -186,12 +187,69 @@ router.get('/pdf/meeting/:meetingId', auth, async (req, res) => {
   }
 });
 
+// Export meeting report to Excel
+router.get('/excel/meeting/:meetingId', auth, async (req, res) => {
+  try {
+    const { meetingId } = req.params;
+
+    const meeting = await Pertemuan.findById(meetingId)
+      .populate('mata_kuliah_id', 'nama kode')
+      .populate('dosen_id', 'nama_lengkap departemen');
+
+    if (!meeting) {
+      return res.status(404).json({ message: 'Meeting not found' });
+    }
+
+    const wb = XLSX.utils.book_new();
+
+    const meetingInfo = [
+      ['Meeting Information'],
+      ['Subject', meeting.mata_kuliah],
+      ['Class', meeting.kelas],
+      ['Meeting', meeting.pertemuan_ke],
+      ['Date', meeting.tanggal.toLocaleDateString()],
+      ['Instructor', meeting.dosen_id?.nama_lengkap || ''],
+      ['Department', meeting.dosen_id?.departemen || ''],
+      ['Duration (min)', meeting.durasi_pertemuan],
+      ['Overall Focus Rate (%)', Number(meeting.hasil_akhir_kelas?.fokus || 0)],
+      ['Students Present', Number(meeting.hasil_akhir_kelas?.jumlah_hadir || 0)]
+    ];
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(meetingInfo), 'Meeting Info');
+
+    const studentRows = (meeting.data_fokus || []).map((s) => ({
+      student_id: s.id_siswa,
+      persen_fokus: s.persen_fokus,
+      persen_tidak_fokus: s.persen_tidak_fokus,
+      durasi_fokus_min: s.durasi_fokus,
+      jumlah_sesi_fokus: s.jumlah_sesi_fokus,
+      status: s.status
+    }));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(studentRows), 'Student Focus');
+
+    const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+    res.setHeader('Content-Disposition', `attachment; filename="meeting-report-${meetingId}.xlsx"`);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.send(buffer);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
 // Export class performance to PDF
 router.get('/pdf/class/:classId', auth, async (req, res) => {
   try {
     const { classId } = req.params;
+    let className = classId;
+
+    if (mongoose.Types.ObjectId.isValid(classId)) {
+      const kelas = await Kelas.findById(classId).select('nama_kelas');
+      if (kelas?.nama_kelas) {
+        className = kelas.nama_kelas;
+      }
+    }
     
-    const meetings = await Pertemuan.find({ kelas: classId })
+    const meetings = await Pertemuan.find({ kelas: className })
       .populate('mata_kuliah_id', 'nama kode')
       .populate('dosen_id', 'nama_lengkap')
       .sort({ tanggal: -1 });
@@ -204,17 +262,17 @@ router.get('/pdf/class/:classId', auth, async (req, res) => {
     const doc = new PDFDocument();
     
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="class-report-${classId}.pdf"`);
+    res.setHeader('Content-Disposition', `attachment; filename="class-report-${className}.pdf"`);
     
     doc.pipe(res);
 
     // Header
-    doc.fontSize(20).text(`Class Performance Report - ${classId}`, { align: 'center' });
+    doc.fontSize(20).text(`Class Performance Report - ${className}`, { align: 'center' });
     doc.moveDown();
 
     // Summary
-    const averageFocus = meetings.reduce((sum, m) => sum + m.hasil_akhir_kelas.fokus, 0) / meetings.length;
-    const totalStudents = Math.max(...meetings.map(m => m.hasil_akhir_kelas.jumlah_hadir));
+    const averageFocus = meetings.reduce((sum, m) => sum + Number(m.hasil_akhir_kelas?.fokus || 0), 0) / meetings.length;
+    const totalStudents = Math.max(0, ...meetings.map(m => Number(m.hasil_akhir_kelas?.jumlah_hadir || 0)));
 
     doc.fontSize(14).text('Class Summary', { underline: true });
     doc.fontSize(12)
@@ -233,7 +291,7 @@ router.get('/pdf/class/:classId', auth, async (req, res) => {
       if (index % 20 === 0 && index > 0) {
         doc.addPage();
       }
-      doc.text(`Meeting ${meeting.pertemuan_ke} - ${meeting.mata_kuliah} (${meeting.tanggal.toLocaleDateString()}): ${meeting.hasil_akhir_kelas.fokus.toFixed(1)}% focus`);
+      doc.text(`Meeting ${meeting.pertemuan_ke} - ${meeting.mata_kuliah} (${meeting.tanggal.toLocaleDateString()}): ${Number(meeting.hasil_akhir_kelas?.fokus || 0).toFixed(1)}% focus`);
     });
 
     doc.end();
