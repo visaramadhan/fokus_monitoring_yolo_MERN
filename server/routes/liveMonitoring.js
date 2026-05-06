@@ -89,6 +89,30 @@ router.post('/pipeline/stop', auth, async (req, res) => {
   }
 });
 
+router.get('/pipeline/health', auth, async (req, res) => {
+  try {
+    const response = await axios.get(`${INFERENCE_URL}/health`, { timeout: 5000 });
+    res.json({ ok: true, inference_url: INFERENCE_URL, health: response.data });
+  } catch (error) {
+    const err = error;
+    const status = err?.response?.status || 500;
+    const message = err?.response?.data?.message || err?.response?.data?.error || err?.message || 'Inference runner not reachable';
+    res.status(status).json({ ok: false, inference_url: INFERENCE_URL, message });
+  }
+});
+
+router.get('/pipeline/status', auth, async (req, res) => {
+  try {
+    const response = await axios.get(`${INFERENCE_URL}/status`, { timeout: 5000 });
+    res.json({ ok: true, inference_url: INFERENCE_URL, ...response.data });
+  } catch (error) {
+    const err = error;
+    const status = err?.response?.status || 500;
+    const message = err?.response?.data?.message || err?.response?.data?.error || err?.message || 'Failed to get inference runner status';
+    res.status(status).json({ ok: false, inference_url: INFERENCE_URL, message });
+  }
+});
+
 // Start live monitoring session
 router.post('/start', auth, async (req, res) => {
   try {

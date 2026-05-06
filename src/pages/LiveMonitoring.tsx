@@ -201,6 +201,8 @@ export default function LiveMonitoring() {
   const [pipelineCameraIndex, setPipelineCameraIndex] = useState(0);
   const [pipelineMaxFps, setPipelineMaxFps] = useState(10);
   const [pipelineRecordIntervalSec, setPipelineRecordIntervalSec] = useState(5);
+  const [pipelineStatus, setPipelineStatus] = useState<'disconnected' | 'connected' | 'error'>('disconnected');
+  const [pipelineError, setPipelineError] = useState<string>('');
 
   const selectedSubject = subjects.find((s) => s._id === selectedSubjectId) || null;
   
@@ -251,7 +253,9 @@ export default function LiveMonitoring() {
   useEffect(() => {
     getCameraDevices();
     fetchModels();
-    checkFlaskStatus();
+    if (!useInferencePipeline) {
+      checkFlaskStatus();
+    }
     
     return () => {
       if (cameraStream) {
@@ -260,8 +264,37 @@ export default function LiveMonitoring() {
       if (detectionIntervalRef.current) {
         clearTimeout(detectionIntervalRef.current);
       }
+      if (pipelinePollRef.current) {
+        clearInterval(pipelinePollRef.current);
+        pipelinePollRef.current = null;
+      }
     };
-  }, []);
+  }, [useInferencePipeline]);
+
+  const checkPipelineStatus = async (): Promise<{ ok: boolean; message?: string }> => {
+    try {
+      const res = await axios.get('/api/live-monitoring/pipeline/health', { timeout: 5000 });
+      if (res.data?.ok) {
+        setPipelineStatus('connected');
+        setPipelineError('');
+        return { ok: true };
+      }
+      setPipelineStatus('error');
+      const message = res.data?.message || 'Inference runner not reachable';
+      setPipelineError(message);
+      return { ok: false, message };
+    } catch (error: any) {
+      const msg = error?.response?.data?.message || error?.message || 'Inference runner not reachable';
+      setPipelineStatus('error');
+      setPipelineError(msg);
+      return { ok: false, message: msg };
+    }
+  };
+
+  useEffect(() => {
+    if (!useInferencePipeline) return;
+    checkPipelineStatus();
+  }, [useInferencePipeline]);
 
   useEffect(() => {
     const fetchDosen = async () => {
@@ -904,6 +937,11 @@ export default function LiveMonitoring() {
 
       if (useInferencePipeline) {
         try {
+          const health = await checkPipelineStatus();
+          if (!health.ok) {
+            showError('Gagal Memulai', health.message || 'Inference runner tidak bisa diakses.');
+            return;
+          }
           const seats = seatPositions.map((s) => ({
             id: String(s.seat_id),
             x: s.x,
@@ -1810,35 +1848,67 @@ export default function LiveMonitoring() {
               )}
             </div>
 
-            {/* Flask Status */}
-            <div className="p-3 bg-gray-50 rounded-lg">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm font-medium text-gray-700">Flask Server</span>
-                <div className={`flex items-center ${
-                  flaskStatus === 'connected' ? 'text-green-600' : 
-                  flaskStatus === 'error' ? 'text-red-600' : 'text-gray-400'
-                }`}>
-                  {flaskStatus === 'connected' ? <CheckCircle className="h-4 w-4" /> :
-                   flaskStatus === 'error' ? <XCircle className="h-4 w-4" /> :
-                   <AlertCircle className="h-4 w-4" />}
-                  <span className="ml-1 text-xs">{flaskStatus}</span>
+            {useInferencePipeline ? (
+              <div className="p-3 bg-gray-50 rounded-lg">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm font-medium text-gray-700">Inference Runner</span>
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={checkPipelineStatus}
+                      className="text-blue-600 hover:text-blue-700 font-medium disabled:opacity-60"
+                      disabled={isMonitoring}
+                    >
+                      Refresh
+                    </button>
+                    <div className={`flex items-center ${
+                      pipelineStatus === 'connected' ? 'text-green-600' :
+                      pipelineStatus === 'error' ? 'text-red-600' : 'text-gray-400'
+                    }`}>
+                      {pipelineStatus === 'connected' ? <CheckCircle className="h-4 w-4" /> :
+                       pipelineStatus === 'error' ? <XCircle className="h-4 w-4" /> :
+                       <AlertCircle className="h-4 w-4" />}
+                      <span className="ml-1 text-xs">{pipelineStatus}</span>
+                    </div>
+                  </div>
+                </div>
+                {pipelineError && (
+                  <p className="text-xs text-red-600 mt-2">{pipelineError}</p>
+                )}
+                <div className="text-xs text-gray-600 mt-2">
+                  Pipeline mode tidak membutuhkan Flask YOLO lama.
                 </div>
               </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium text-gray-700">Model Status</span>
-                <div className={`flex items-center ${
-                  modelStatus === 'active' ? 'text-green-600' : 
-                  modelStatus === 'loading' ? 'text-yellow-600' :
-                  modelStatus === 'error' ? 'text-red-600' : 'text-gray-400'
-                }`}>
-                  {modelStatus === 'loading' && <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-current mr-1"></div>}
-                  <span className="text-xs">{modelStatus}</span>
+            ) : (
+              <div className="p-3 bg-gray-50 rounded-lg">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm font-medium text-gray-700">Flask Server</span>
+                  <div className={`flex items-center ${
+                    flaskStatus === 'connected' ? 'text-green-600' : 
+                    flaskStatus === 'error' ? 'text-red-600' : 'text-gray-400'
+                  }`}>
+                    {flaskStatus === 'connected' ? <CheckCircle className="h-4 w-4" /> :
+                     flaskStatus === 'error' ? <XCircle className="h-4 w-4" /> :
+                     <AlertCircle className="h-4 w-4" />}
+                    <span className="ml-1 text-xs">{flaskStatus}</span>
+                  </div>
                 </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium text-gray-700">Model Status</span>
+                  <div className={`flex items-center ${
+                    modelStatus === 'active' ? 'text-green-600' : 
+                    modelStatus === 'loading' ? 'text-yellow-600' :
+                    modelStatus === 'error' ? 'text-red-600' : 'text-gray-400'
+                  }`}>
+                    {modelStatus === 'loading' && <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-current mr-1"></div>}
+                    <span className="text-xs">{modelStatus}</span>
+                  </div>
+                </div>
+                {flaskError && (
+                  <p className="text-xs text-red-600 mt-2">{flaskError}</p>
+                )}
               </div>
-              {flaskError && (
-                <p className="text-xs text-red-600 mt-2">{flaskError}</p>
-              )}
-            </div>
+            )}
 
             {user?.role === 'admin' && (
               <div>
