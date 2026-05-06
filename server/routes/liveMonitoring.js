@@ -1,12 +1,93 @@
 
 
 import express from 'express';
+import axios from 'axios';
 import LiveSession from '../models/LiveSession.js';
 import { auth } from '../middleware/auth.js';
 import { v4 as uuidv4 } from 'uuid';
 import mongoose from 'mongoose';
 
 const router = express.Router();
+
+const INFERENCE_URL = process.env.INFERENCE_URL || 'http://127.0.0.1:5001';
+const latestFrames = new Map();
+
+router.post('/frame', (req, res) => {
+  try {
+    const { session_id, frame, predictions, timestamp } = req.body || {};
+    const sid = String(session_id || '');
+    if (!sid) return res.status(400).json({ message: 'session_id is required' });
+    if (typeof frame !== 'string') return res.status(400).json({ message: 'frame must be a base64 string' });
+    const preds = Array.isArray(predictions) ? predictions : [];
+    latestFrames.set(sid, { frame, predictions: preds, timestamp: Number(timestamp) || Date.now() });
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ message: error?.message || 'Failed to store frame' });
+  }
+});
+
+router.get('/frame/:sessionId', auth, (req, res) => {
+  const { sessionId } = req.params;
+  const data = latestFrames.get(String(sessionId));
+  if (!data) return res.json({ frame: null, predictions: [], timestamp: null });
+  res.json(data);
+});
+
+router.post('/pipeline/start', auth, async (req, res) => {
+  try {
+    const {
+      camera_index = 0,
+      seats = [],
+      session_id,
+      confidence = 0.5,
+      max_fps = 10,
+      record_interval = 5,
+      jpeg_quality = 72
+    } = req.body || {};
+
+    const sid = String(session_id || '');
+    if (!sid) return res.status(400).json({ message: 'session_id is required' });
+
+    const response = await axios.post(
+      `${INFERENCE_URL}/start`,
+      {
+        camera_index,
+        seats: Array.isArray(seats) ? seats : [],
+        session_id: sid,
+        confidence,
+        max_fps,
+        record_interval,
+        jpeg_quality
+      },
+      { timeout: 15000 }
+    );
+    res.json(response.data);
+  } catch (error) {
+    const err = error;
+    const status = err?.response?.status || 500;
+    const message = err?.response?.data?.message || err?.response?.data?.error || err?.message || 'Failed to start inference pipeline';
+    res.status(status).json({ message });
+  }
+});
+
+router.post('/pipeline/stop', auth, async (req, res) => {
+  try {
+    const { session_id } = req.body || {};
+    const sid = session_id ? String(session_id) : '';
+    const response = await axios.post(
+      `${INFERENCE_URL}/stop`,
+      sid ? { session_id: sid } : {},
+      { timeout: 15000 }
+    );
+    if (sid) latestFrames.delete(sid);
+    res.json(response.data);
+  } catch (error) {
+    const err = error;
+    const status = err?.response?.status || 500;
+    const message = err?.response?.data?.message || err?.response?.data?.error || err?.message || 'Failed to stop inference pipeline';
+    res.status(status).json({ message });
+  }
+});
 
 // Start live monitoring session
 router.post('/start', auth, async (req, res) => {

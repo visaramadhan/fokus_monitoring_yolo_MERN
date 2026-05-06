@@ -197,6 +197,10 @@ export default function LiveMonitoring() {
   const [recordIntervalSec, setRecordIntervalSec] = useState(3);
   const [lastInferenceMs, setLastInferenceMs] = useState<number | null>(null);
   const [isTestingDetection, setIsTestingDetection] = useState(false);
+  const [useInferencePipeline, setUseInferencePipeline] = useState(false);
+  const [pipelineCameraIndex, setPipelineCameraIndex] = useState(0);
+  const [pipelineMaxFps, setPipelineMaxFps] = useState(10);
+  const [pipelineRecordIntervalSec, setPipelineRecordIntervalSec] = useState(5);
 
   const selectedSubject = subjects.find((s) => s._id === selectedSubjectId) || null;
   
@@ -213,6 +217,7 @@ export default function LiveMonitoring() {
   const lastCaptureDimsRef = useRef<{ width: number; height: number } | null>(null);
   const detectionMemoryRef = useRef<Map<string, { det: YoloDetection; lastSeen: number }>>(new Map());
   const requestDrawRef = useRef<number | null>(null);
+  const pipelinePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const todayStr = () => {
     const d = new Date();
@@ -851,8 +856,10 @@ export default function LiveMonitoring() {
     }
 
     try {
-      if (!cameraStream) {
-        await startCamera();
+      if (!useInferencePipeline) {
+        if (!cameraStream) {
+          await startCamera();
+        }
       }
 
       const schedule = schedules.find(s => s._id === selectedSchedule);
@@ -895,8 +902,31 @@ export default function LiveMonitoring() {
       lastRecordAtRef.current = 0;
       showSuccess('Berhasil', 'Live monitoring dimulai.');
 
-      // Start face detection with Flask
-      startFlaskDetection(response.data.sessionId);
+      if (useInferencePipeline) {
+        try {
+          const seats = seatPositions.map((s) => ({
+            id: String(s.seat_id),
+            x: s.x,
+            y: s.y,
+            w: s.width,
+            h: s.height
+          }));
+          await axios.post('/api/live-monitoring/pipeline/start', {
+            camera_index: pipelineCameraIndex,
+            seats,
+            session_id: response.data.sessionId,
+            confidence: detectionConf,
+            max_fps: pipelineMaxFps,
+            record_interval: pipelineRecordIntervalSec,
+            jpeg_quality: Math.round(detectionJpegQuality * 100)
+          });
+          startPipelinePolling(response.data.sessionId);
+        } catch (error) {
+          showError('Gagal Memulai', 'Pipeline inference gagal dimulai. Pastikan inference_runner berjalan.');
+        }
+      } else {
+        startFlaskDetection(response.data.sessionId);
+      }
     } catch (error) {
       showError('Gagal Memulai', 'Gagal memulai live monitoring.');
       console.error('Start monitoring error:', error);
@@ -912,11 +942,27 @@ export default function LiveMonitoring() {
       if (detectionIntervalRef.current) {
         clearTimeout(detectionIntervalRef.current);
       }
+      if (pipelinePollRef.current) {
+        clearInterval(pipelinePollRef.current);
+        pipelinePollRef.current = null;
+      }
 
       await axios.post(`/api/live-monitoring/stop/${currentSession.sessionId}`);
       
       // Export data automatically
-      const exported = await exportSessionData();
+      let pipelineStopData: any = null;
+      if (useInferencePipeline) {
+        try {
+          const resp = await axios.post('/api/live-monitoring/pipeline/stop', { session_id: currentSession.sessionId });
+          pipelineStopData = resp.data;
+        } catch (error) {
+          pipelineStopData = null;
+        }
+      }
+      const exported = await exportSessionData({
+        pipelineSummary: pipelineStopData?.summary,
+        pipelineSeatResults: pipelineStopData?.seat_results
+      });
       
       setIsMonitoring(false);
       setCurrentSession(null);
@@ -951,6 +997,27 @@ export default function LiveMonitoring() {
     }
   };
 
+  const startPipelinePolling = (sessionId: string) => {
+    if (pipelinePollRef.current) {
+      clearInterval(pipelinePollRef.current);
+      pipelinePollRef.current = null;
+    }
+    pipelinePollRef.current = setInterval(async () => {
+      try {
+        const { data } = await axios.get(`/api/live-monitoring/frame/${sessionId}`);
+        const frame = typeof data?.frame === 'string' ? data.frame : '';
+        if (frame) {
+          setAnnotatedImage(frame.startsWith('data:image') ? frame : `data:image/jpeg;base64,${frame}`);
+        }
+        const preds = Array.isArray(data?.predictions) ? data.predictions : [];
+        if (preds.length > 0) {
+          setYoloDetections([]);
+        }
+      } catch (error) {
+      }
+    }, 100);
+  };
+
   const startFlaskDetection = (sessionId: string) => {
     if (!sessionId) {
       console.error('Session ID is required for detection');
@@ -979,10 +1046,11 @@ export default function LiveMonitoring() {
   };
 
   useEffect(() => {
+    if (useInferencePipeline) return;
     if (isMonitoring && currentSession?.sessionId) {
       startFlaskDetection(currentSession.sessionId);
     }
-  }, [isMonitoring, currentSession?.sessionId]);
+  }, [isMonitoring, currentSession?.sessionId, useInferencePipeline]);
   
   const captureFrameDataUrl = async (opts?: { targetWidth?: number; targetHeight?: number; quality?: number }) => {
     const video = videoRef.current;
@@ -1366,7 +1434,7 @@ export default function LiveMonitoring() {
     }
   };
 
-  const exportSessionData = async () => {
+  const exportSessionData = async (opts?: { pipelineSummary?: any; pipelineSeatResults?: any }) => {
     if (!currentSession) return;
 
     try {
@@ -1383,10 +1451,13 @@ export default function LiveMonitoring() {
       const startMs = currentSession.startTime ? new Date(currentSession.startTime).getTime() : sessionStartedAtRef.current || Date.now();
       const sessionDurationMs = Math.max(1, Date.now() - startMs);
       const sessionDurationMin = Math.max(1, Math.round(sessionDurationMs / 60000));
+      const pipelineFocusPct = typeof opts?.pipelineSummary?.fokus === 'number' ? Number(opts?.pipelineSummary?.fokus) : null;
       const averageFocusPct =
-        detectionData.length > 0
-          ? detectionData.reduce((sum, d) => sum + (Number(d.focusPercentage) || 0), 0) / detectionData.length
-          : 0;
+        pipelineFocusPct !== null
+          ? pipelineFocusPct
+          : detectionData.length > 0
+            ? detectionData.reduce((sum, d) => sum + (Number(d.focusPercentage) || 0), 0) / detectionData.length
+            : 0;
 
       // Calculate per-student statistics
       const studentStats = seatPositions
@@ -1405,27 +1476,63 @@ export default function LiveMonitoring() {
       const mataKuliahId = toId(schedule.mata_kuliah_id) || schedule.mata_kuliah_id;
       const dosenId = toId(schedule.dosen_id) || (user?.role === 'admin' ? selectedDosenId : user?.id);
 
-      const dataFokus = seatPositions.map(seat => {
-        const pct = Math.max(0, Math.min(100, seat.total_focus_duration > 0 ? (seat.total_focus_duration / sessionDurationMs) * 100 : 0));
-        const persenFokus = Math.round(pct);
-        const durasiFokusMin = Math.max(0, Math.round(seat.total_focus_duration / 60000));
-        const jumlahSesiFokus = durasiFokusMin;
-        let status: 'Baik' | 'Cukup' | 'Kurang' = 'Kurang';
-        if (persenFokus >= 80) status = 'Baik';
-        else if (persenFokus >= 60) status = 'Cukup';
+      const pipelineSeatResults = opts?.pipelineSeatResults && typeof opts?.pipelineSeatResults === 'object' ? opts.pipelineSeatResults : null;
 
-        return {
-          id_siswa: seat.student_id || `S${seat.seat_id}`,
-          jumlah_sesi_fokus: jumlahSesiFokus,
-          durasi_fokus: durasiFokusMin,
-          persen_fokus: persenFokus,
-          persen_tidak_fokus: 100 - persenFokus,
-          status
-        };
-      });
+      const dataFokus = pipelineSeatResults
+        ? Object.entries(pipelineSeatResults).map(([seatId, statsAny]: any) => {
+            const stats = statsAny || {};
+            const fokus = Number(stats.fokus || 0);
+            const tidak = Number(stats.tidak_fokus || 0);
+            const total = fokus + tidak;
+            const persenFokus = Math.round(total > 0 ? (fokus / total) * 100 : (stats.focused ? 100 : 0));
+            const durasiFokusMin = Math.max(0, Math.round((sessionDurationMin * persenFokus) / 100));
+            let status: 'Baik' | 'Cukup' | 'Kurang' = 'Kurang';
+            if (persenFokus >= 80) status = 'Baik';
+            else if (persenFokus >= 60) status = 'Cukup';
+            return {
+              id_siswa: String(seatId),
+              jumlah_sesi_fokus: Math.max(0, fokus),
+              durasi_fokus: durasiFokusMin,
+              persen_fokus: persenFokus,
+              persen_tidak_fokus: Math.max(0, 100 - persenFokus),
+              status
+            };
+          })
+        : seatPositions.map(seat => {
+            const pct = Math.max(0, Math.min(100, seat.total_focus_duration > 0 ? (seat.total_focus_duration / sessionDurationMs) * 100 : 0));
+            const persenFokus = Math.round(pct);
+            const durasiFokusMin = Math.max(0, Math.round(seat.total_focus_duration / 60000));
+            const jumlahSesiFokus = durasiFokusMin;
+            let status: 'Baik' | 'Cukup' | 'Kurang' = 'Kurang';
+            if (persenFokus >= 80) status = 'Baik';
+            else if (persenFokus >= 60) status = 'Cukup';
 
-      const focusedCount = seatPositions.filter(s => s.total_focus_duration > 0).length;
-      const focusPercentage = seatPositions.length > 0 ? Math.round((focusedCount / seatPositions.length) * 100) : 0;
+            return {
+              id_siswa: seat.student_id || `S${seat.seat_id}`,
+              jumlah_sesi_fokus: jumlahSesiFokus,
+              durasi_fokus: durasiFokusMin,
+              persen_fokus: persenFokus,
+              persen_tidak_fokus: 100 - persenFokus,
+              status
+            };
+          });
+
+      const focusPercentage =
+        typeof opts?.pipelineSummary?.fokus === 'number'
+          ? Number(opts?.pipelineSummary?.fokus)
+          : (() => {
+              const focusedCount = seatPositions.filter(s => s.total_focus_duration > 0).length;
+              return seatPositions.length > 0 ? Math.round((focusedCount / seatPositions.length) * 100) : 0;
+            })();
+
+      const focusedCount =
+        typeof opts?.pipelineSummary?.fokus_count === 'number'
+          ? Number(opts?.pipelineSummary?.fokus_count)
+          : seatPositions.filter(s => s.total_focus_duration > 0).length;
+      const totalSeatsForSummary =
+        typeof opts?.pipelineSummary?.jumlah_hadir === 'number'
+          ? Number(opts?.pipelineSummary?.jumlah_hadir)
+          : seatPositions.length;
 
       // Save to database
       const response = await axios.post('/api/session-records', {
@@ -1437,7 +1544,7 @@ export default function LiveMonitoring() {
         detectionData,
         studentData: studentStats,
         summary: {
-          totalSeats: seatPositions.length,
+          totalSeats: totalSeatsForSummary,
           averageFocusTime: seatPositions.reduce((sum, seat) => sum + seat.total_focus_duration, 0) / seatPositions.length,
           averageFocusTimePct: averageFocusPct,
           sessionDuration: sessionDurationMs
@@ -1463,9 +1570,9 @@ export default function LiveMonitoring() {
         hasil_akhir_kelas: {
           fokus: focusPercentage,
           tidak_fokus: 100 - focusPercentage,
-          jumlah_hadir: seatPositions.length,
+          jumlah_hadir: totalSeatsForSummary,
           fokus_count: focusedCount,
-          tidak_fokus_count: Math.max(0, seatPositions.length - focusedCount)
+          tidak_fokus_count: Math.max(0, totalSeatsForSummary - focusedCount)
         }
       });
 
@@ -1640,6 +1747,69 @@ export default function LiveMonitoring() {
           </div>
           
           <div className="space-y-4">
+            <div className="p-3 bg-gray-50 rounded-lg">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium text-gray-700">Mode Inference</span>
+                <label className="flex items-center gap-2 text-sm text-gray-700">
+                  <input
+                    type="checkbox"
+                    checked={useInferencePipeline}
+                    onChange={(e) => {
+                      setUseInferencePipeline(e.target.checked);
+                      setAnnotatedImage('');
+                      setYoloDetections([]);
+                      if (pipelinePollRef.current) {
+                        clearInterval(pipelinePollRef.current);
+                        pipelinePollRef.current = null;
+                      }
+                    }}
+                    disabled={isMonitoring}
+                  />
+                  Pipeline (Roboflow)
+                </label>
+              </div>
+
+              {useInferencePipeline && (
+                <div className="grid grid-cols-3 gap-2 mt-3">
+                  <div>
+                    <div className="text-xs text-gray-600 mb-1">Camera Index</div>
+                    <input
+                      type="number"
+                      min={0}
+                      value={pipelineCameraIndex}
+                      onChange={(e) => setPipelineCameraIndex(Number(e.target.value) || 0)}
+                      disabled={isMonitoring}
+                      className="w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                    />
+                  </div>
+                  <div>
+                    <div className="text-xs text-gray-600 mb-1">Max FPS</div>
+                    <input
+                      type="number"
+                      min={1}
+                      max={30}
+                      value={pipelineMaxFps}
+                      onChange={(e) => setPipelineMaxFps(Number(e.target.value) || 10)}
+                      disabled={isMonitoring}
+                      className="w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                    />
+                  </div>
+                  <div>
+                    <div className="text-xs text-gray-600 mb-1">Record (sec)</div>
+                    <input
+                      type="number"
+                      min={1}
+                      max={60}
+                      value={pipelineRecordIntervalSec}
+                      onChange={(e) => setPipelineRecordIntervalSec(Number(e.target.value) || 5)}
+                      disabled={isMonitoring}
+                      className="w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
             {/* Flask Status */}
             <div className="p-3 bg-gray-50 rounded-lg">
               <div className="flex items-center justify-between mb-2">
