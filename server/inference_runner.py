@@ -1,4 +1,5 @@
 import os
+import json
 import time
 import base64
 import threading
@@ -321,6 +322,23 @@ def http_status():
 @app.route("/health", methods=["GET"])
 def http_health():
     return jsonify({"status": "OK"})
+
+
+@app.route("/api/model-info", methods=["GET"])
+def http_model_info():
+    try:
+        artifacts_path = os.path.join(os.path.dirname(__file__), "uploads", "models", "model_artifacts.json")
+        if not os.path.exists(artifacts_path):
+            return jsonify({"success": False, "message": "model_artifacts.json not found"}), 200
+        with open(artifacts_path, "r", encoding="utf-8") as f:
+            data = json.load(f) or {}
+        names_list = data.get("names", []) or []
+        if not isinstance(names_list, list):
+            names_list = []
+        names = {str(i): str(n) for i, n in enumerate(names_list)}
+        return jsonify({"success": True, "names": names, "num_classes": len(names_list)}), 200
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 200
 
 
 if __name__ == "__main__":
