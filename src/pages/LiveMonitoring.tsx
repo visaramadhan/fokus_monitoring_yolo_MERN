@@ -995,8 +995,13 @@ export default function LiveMonitoring() {
         showSuccess('Berhasil', 'Live monitoring dimulai.');
         startFlaskDetection(response.data.sessionId);
       }
-    } catch (error) {
-      showError('Gagal Memulai', 'Gagal memulai live monitoring.');
+    } catch (error: any) {
+      const msg =
+        error?.response?.data?.message ||
+        error?.response?.data?.error ||
+        error?.message ||
+        'Gagal memulai live monitoring.';
+      showError('Gagal Memulai', msg);
       console.error('Start monitoring error:', error);
     }
   };

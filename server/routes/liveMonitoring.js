@@ -116,23 +116,37 @@ router.get('/pipeline/status', auth, async (req, res) => {
 // Start live monitoring session
 router.post('/start', auth, async (req, res) => {
   try {
-    const { kelas, mata_kuliah_id, mata_kuliah, dosen_id } = req.body;
+    const { kelas, mata_kuliah_id, mata_kuliah, dosen_id } = req.body || {};
+
+    const kelasStr = String(kelas || '').trim();
+    const mataKuliahStr = String(mata_kuliah || '').trim();
+    const rawMk =
+      typeof mata_kuliah_id === 'string'
+        ? mata_kuliah_id
+        : (mata_kuliah_id?._id || mata_kuliah_id?.id || '').toString();
+    const mkIdStr = String(rawMk || '').trim();
+
+    if (!kelasStr) return res.status(400).json({ message: 'kelas is required' });
+    if (!mataKuliahStr) return res.status(400).json({ message: 'mata_kuliah is required' });
+    if (!mkIdStr) return res.status(400).json({ message: 'mata_kuliah_id is required' });
+    if (!mongoose.Types.ObjectId.isValid(mkIdStr)) {
+      return res.status(400).json({ message: 'Invalid mata_kuliah_id' });
+    }
 
     let dosenIdToUse = req.user._id;
-    if (req.user.role === 'admin' && dosen_id) {
+    if (req.user.role === 'admin') {
+      if (!dosen_id) return res.status(400).json({ message: 'dosen_id is required for admin' });
       const raw = String(dosen_id);
-      if (!mongoose.Types.ObjectId.isValid(raw)) {
-        return res.status(400).json({ message: 'Invalid dosen_id' });
-      }
+      if (!mongoose.Types.ObjectId.isValid(raw)) return res.status(400).json({ message: 'Invalid dosen_id' });
       dosenIdToUse = new mongoose.Types.ObjectId(raw);
     }
     
     const sessionId = uuidv4();
     const liveSession = new LiveSession({
       sessionId,
-      kelas,
-      mata_kuliah,
-      mata_kuliah_id,
+      kelas: kelasStr,
+      mata_kuliah: mataKuliahStr,
+      mata_kuliah_id: new mongoose.Types.ObjectId(mkIdStr),
       dosen_id: dosenIdToUse
     });
 
@@ -142,7 +156,7 @@ router.post('/start', auth, async (req, res) => {
 
     res.status(201).json(liveSession);
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    res.status(500).json({ message: error?.message || 'Failed to start live monitoring session' });
   }
 });
 
