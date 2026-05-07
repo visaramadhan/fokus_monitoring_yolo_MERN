@@ -14,6 +14,9 @@ app = Flask(__name__)
 current_pipeline = None
 pipeline_thread = None
 active_session_id: Optional[str] = None
+pipeline_state: str = "idle"
+pipeline_error: str = ""
+terminate_requested: bool = False
 
 latest_frame_by_session: Dict[str, Dict[str, Any]] = {}
 seat_stats: Dict[str, Dict[str, int]] = {}
@@ -199,48 +202,80 @@ def _build_sink(seats: List[dict], record_interval: int, session_id: str, jpeg_q
 
 
 def start_pipeline(camera_index: int, seats: List[dict], session_id: str, confidence: float = 0.5, max_fps: int = 10, record_interval: int = 5, jpeg_quality: int = 72):
-    global current_pipeline, pipeline_thread, active_session_id, seat_stats
+    global current_pipeline, pipeline_thread, active_session_id, seat_stats, pipeline_state, pipeline_error, terminate_requested
 
-    _require_deps()
-    if not ROBOFLOW_API_KEY:
-        raise RuntimeError("ROBOFLOW_API_KEY is not set")
-    if not MODEL_ID:
-        raise RuntimeError("ROBOFLOW_MODEL_ID is not set (example: project/1)")
-
-    if current_pipeline is not None:
-        raise RuntimeError("Pipeline already running")
-
-    active_session_id = session_id
     with lock:
+        if pipeline_state in {"starting", "running"} or current_pipeline is not None:
+            raise RuntimeError("Pipeline already running")
+        pipeline_state = "starting"
+        pipeline_error = ""
+        terminate_requested = False
+        active_session_id = session_id
         seat_stats = {}
 
-    from inference import InferencePipeline
-
-    sink = _build_sink(seats=seats, record_interval=record_interval, session_id=session_id, jpeg_quality=jpeg_quality)
-
-    current_pipeline = InferencePipeline.init(
-        model_id=MODEL_ID,
-        video_reference=int(camera_index),
-        on_prediction=sink,
-        api_key=ROBOFLOW_API_KEY,
-        confidence=float(confidence),
-        max_fps=int(max_fps),
-    )
-
     def run():
+        global current_pipeline, pipeline_state, pipeline_error, terminate_requested
         try:
-            current_pipeline.start()
-            current_pipeline.join()
-        except Exception:
-            pass
+            _require_deps()
+            if not ROBOFLOW_API_KEY:
+                raise RuntimeError("ROBOFLOW_API_KEY is not set")
+            if not MODEL_ID:
+                raise RuntimeError("ROBOFLOW_MODEL_ID is not set (example: project/1)")
+
+            from inference import InferencePipeline
+
+            sink = _build_sink(seats=seats, record_interval=record_interval, session_id=session_id, jpeg_quality=jpeg_quality)
+
+            pipeline = InferencePipeline.init(
+                model_id=MODEL_ID,
+                video_reference=int(camera_index),
+                on_prediction=sink,
+                api_key=ROBOFLOW_API_KEY,
+                confidence=float(confidence),
+                max_fps=int(max_fps),
+            )
+
+            with lock:
+                if terminate_requested:
+                    try:
+                        pipeline.terminate()
+                    except Exception:
+                        pass
+                    current_pipeline = None
+                    pipeline_state = "idle"
+                    return
+                current_pipeline = pipeline
+                pipeline_state = "running"
+
+            try:
+                pipeline.start()
+                pipeline.join()
+            finally:
+                with lock:
+                    current_pipeline = None
+                    if pipeline_state == "running":
+                        pipeline_state = "idle"
+        except Exception as e:
+            with lock:
+                current_pipeline = None
+                pipeline_state = "error"
+                pipeline_error = str(e)
 
     pipeline_thread = threading.Thread(target=run, daemon=True)
     pipeline_thread.start()
-    return {"status": "started", "session_id": session_id}
+    return {"status": "starting", "session_id": session_id}
 
 
 def stop_pipeline(session_id: Optional[str] = None):
-    global current_pipeline, active_session_id
+    global current_pipeline, active_session_id, pipeline_state, terminate_requested
+
+    with lock:
+        terminate_requested = True
+        if current_pipeline is None and pipeline_state == "starting":
+            pipeline_state = "idle"
+            sid = session_id or active_session_id
+            active_session_id = None
+            return {"status": "stopped", "session_id": sid, "seat_results": {}, "summary": {"fokus": 0, "tidak_fokus": 0, "fokus_count": 0, "tidak_fokus_count": 0, "jumlah_hadir": 0}}
 
     if current_pipeline is None:
         return {"status": "stopped", "session_id": active_session_id, "seat_results": {}, "summary": {"fokus": 0, "tidak_fokus": 0, "fokus_count": 0, "tidak_fokus_count": 0, "jumlah_hadir": 0}}
@@ -315,6 +350,8 @@ def http_status():
                 "active": current_pipeline is not None,
                 "session_id": active_session_id,
                 "seat_stats": seat_stats,
+                "pipeline_state": pipeline_state,
+                "pipeline_error": pipeline_error,
             }
         )
 

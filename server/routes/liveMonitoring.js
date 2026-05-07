@@ -59,12 +59,12 @@ router.post('/pipeline/start', auth, async (req, res) => {
         record_interval,
         jpeg_quality
       },
-      { timeout: 15000 }
+      { timeout: 60000 }
     );
     res.json(response.data);
   } catch (error) {
     const err = error;
-    const status = err?.response?.status || 500;
+    const status = err?.code === 'ECONNABORTED' ? 504 : (err?.response?.status || 500);
     const message = err?.response?.data?.message || err?.response?.data?.error || err?.message || 'Failed to start inference pipeline';
     res.status(status).json({ message });
   }
