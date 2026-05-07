@@ -19,6 +19,28 @@ seat_stats: Dict[str, Dict[str, int]] = {}
 lock = threading.Lock()
 
 
+def _load_dotenv(dotenv_path: str) -> None:
+    try:
+        if not dotenv_path or not os.path.exists(dotenv_path):
+            return
+        with open(dotenv_path, "r", encoding="utf-8") as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip().strip("'").strip('"')
+                if not key:
+                    continue
+                os.environ.setdefault(key, value)
+    except Exception:
+        return
+
+
+_load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+
+
 def _env(name: str, default: str = "") -> str:
     val = os.environ.get(name)
     if val is None:
@@ -42,32 +64,55 @@ def _require_deps():
     try:
         import cv2  # noqa: F401
         import numpy as np  # noqa: F401
-        import supervision as sv  # noqa: F401
         from inference import InferencePipeline  # noqa: F401
         from inference.core.interfaces.camera.entities import VideoFrame  # noqa: F401
     except Exception as e:
         raise RuntimeError(
-            "Missing Python dependencies for InferencePipeline. Install: pip install inference inference-sdk supervision opencv-python"
+            "Missing Python dependencies for InferencePipeline. Install: pip install inference inference-sdk opencv-python numpy"
         ) from e
+
+
+def _draw_predictions(frame_bgr, predictions_list: List[dict]):
+    import cv2
+
+    h, w = frame_bgr.shape[:2]
+    for pred in predictions_list:
+        cls = str(pred.get("class", "")).strip()
+        cls_norm = cls.lower()
+        conf = float(pred.get("confidence", 0.0) or 0.0)
+
+        cx = float(pred.get("x", 0.0) or 0.0)
+        cy = float(pred.get("y", 0.0) or 0.0)
+        pw = float(pred.get("width", 0.0) or 0.0)
+        ph = float(pred.get("height", 0.0) or 0.0)
+
+        x1 = int(max(0, min(w - 1, cx - pw / 2.0)))
+        y1 = int(max(0, min(h - 1, cy - ph / 2.0)))
+        x2 = int(max(0, min(w - 1, cx + pw / 2.0)))
+        y2 = int(max(0, min(h - 1, cy + ph / 2.0)))
+
+        if cls_norm in FOCUS_CLASSES:
+            color = (34, 197, 94)
+        elif cls_norm in NONFOCUS_CLASSES:
+            color = (239, 68, 68)
+        else:
+            color = (59, 130, 246)
+
+        cv2.rectangle(frame_bgr, (x1, y1), (x2, y2), color, 2)
+        label = f"{cls} {conf:.2f}"
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
+        ty1 = max(0, y1 - th - 8)
+        cv2.rectangle(frame_bgr, (x1, ty1), (x1 + tw + 6, ty1 + th + 6), color, -1)
+        cv2.putText(frame_bgr, label, (x1 + 3, ty1 + th + 2), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 2)
+
+    return frame_bgr
 
 
 def _annotate_and_encode_jpeg(frame_bgr, predictions: dict, jpeg_quality: int = 72) -> str:
     import cv2
-    import supervision as sv
 
-    detections = sv.Detections.from_inference(predictions)
     raw_preds = predictions.get("predictions", []) or []
-    labels = []
-    for p in raw_preds:
-        cls = str(p.get("class", ""))
-        conf = float(p.get("confidence", 0.0) or 0.0)
-        labels.append(f"{cls} {conf:.2f}")
-
-    box_annotator = sv.BoxAnnotator()
-    label_annotator = sv.LabelAnnotator()
-    annotated = frame_bgr.copy()
-    annotated = box_annotator.annotate(scene=annotated, detections=detections)
-    annotated = label_annotator.annotate(scene=annotated, detections=detections, labels=labels)
+    annotated = _draw_predictions(frame_bgr.copy(), raw_preds)
 
     ok, buffer = cv2.imencode(".jpg", annotated, [int(cv2.IMWRITE_JPEG_QUALITY), int(jpeg_quality)])
     if not ok:
@@ -281,4 +326,3 @@ def http_health():
 if __name__ == "__main__":
     port = int(_env("INFERENCE_PORT", "5001"))
     app.run(host="0.0.0.0", port=port, debug=True)
-

@@ -411,6 +411,12 @@ export default function LiveMonitoring() {
   };
 
   const checkFlaskStatus = async () => {
+    if (useInferencePipeline) {
+      setFlaskStatus('disconnected');
+      setModelStatus('inactive');
+      setFlaskError('');
+      return;
+    }
     try {
       await axios.get('/flask/health', { timeout: 5000 });
       setFlaskStatus('connected');
