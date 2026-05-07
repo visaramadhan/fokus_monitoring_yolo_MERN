@@ -929,18 +929,6 @@ export default function LiveMonitoring() {
         ...(user?.role === 'admin' ? { dosen_id: selectedDosenId } : {})
       });
 
-      setCurrentSession(response.data);
-      setIsMonitoring(true);
-      setIsLabellingMode(false);
-      setDetectionData([]);
-      setDetectionRecords([]);
-      setAnnotatedImage('');
-      setYoloDetections([]);
-      detectionMemoryRef.current.clear();
-      sessionStartedAtRef.current = Date.now();
-      lastRecordAtRef.current = 0;
-      showSuccess('Berhasil', 'Live monitoring dimulai.');
-
       if (useInferencePipeline) {
         try {
           const health = await checkPipelineStatus();
@@ -965,10 +953,46 @@ export default function LiveMonitoring() {
             jpeg_quality: Math.round(detectionJpegQuality * 100)
           });
           startPipelinePolling(response.data.sessionId);
-        } catch (error) {
-          showError('Gagal Memulai', 'Pipeline inference gagal dimulai. Pastikan inference_runner berjalan.');
+          setCurrentSession(response.data);
+          setIsMonitoring(true);
+          isMonitoringRef.current = true;
+          setIsLabellingMode(false);
+          setDetectionData([]);
+          setDetectionRecords([]);
+          setAnnotatedImage('');
+          setYoloDetections([]);
+          detectionMemoryRef.current.clear();
+          sessionStartedAtRef.current = Date.now();
+          lastRecordAtRef.current = 0;
+          showSuccess('Berhasil', 'Live monitoring dimulai (Pipeline).');
+        } catch (error: any) {
+          const msg =
+            error?.response?.data?.message ||
+            error?.response?.data?.error ||
+            error?.message ||
+            'Pipeline inference gagal dimulai.';
+          showError('Gagal Memulai', msg);
+          try {
+            await axios.post(`/api/live-monitoring/stop/${response.data.sessionId}`);
+          } catch {}
+          try {
+            await axios.put(`/api/jadwal/${selectedSchedule}`, { status: 'scheduled' });
+          } catch {}
+          await fetchSchedules().catch(() => {});
         }
       } else {
+        setCurrentSession(response.data);
+        setIsMonitoring(true);
+        isMonitoringRef.current = true;
+        setIsLabellingMode(false);
+        setDetectionData([]);
+        setDetectionRecords([]);
+        setAnnotatedImage('');
+        setYoloDetections([]);
+        detectionMemoryRef.current.clear();
+        sessionStartedAtRef.current = Date.now();
+        lastRecordAtRef.current = 0;
+        showSuccess('Berhasil', 'Live monitoring dimulai.');
         startFlaskDetection(response.data.sessionId);
       }
     } catch (error) {
@@ -2332,10 +2356,7 @@ export default function LiveMonitoring() {
                     whileHover={{ scale: 1.02 }}
                     whileTap={{ scale: 0.98 }}
                     onClick={() => {
-toast('Upload feature will be available soon', {
-  icon: 'ℹ️',
-  duration: 3000
-});
+                      showSuccess('Info', 'Fitur upload akan tersedia segera.');
                     }}
                     className="w-full flex items-center justify-center px-4 py-2 bg-gradient-to-r from-teal-500 to-teal-600 text-white rounded-lg font-medium"
                   >
