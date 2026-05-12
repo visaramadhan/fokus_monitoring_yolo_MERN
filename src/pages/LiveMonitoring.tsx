@@ -1189,6 +1189,68 @@ export default function LiveMonitoring() {
     if (isTestingDetection) return;
     setIsTestingDetection(true);
     try {
+      if (useInferencePipeline) {
+        const health = await checkPipelineStatus();
+        if (!health.ok) {
+          showError('Gagal', health.message || 'Inference runner tidak bisa diakses.');
+          return;
+        }
+
+        const testSessionId = `test_${Date.now()}`;
+        await axios.post('/api/live-monitoring/pipeline/start', {
+          camera_index: pipelineCameraIndex,
+          seats: [],
+          session_id: testSessionId,
+          confidence: detectionConf,
+          max_fps: Math.max(1, Math.min(10, pipelineMaxFps || 10)),
+          record_interval: Math.max(1, Math.min(60, pipelineRecordIntervalSec || 5)),
+          jpeg_quality: Math.round(detectionJpegQuality * 100)
+        });
+
+        let lastFrame = '';
+        let lastPreds: any[] = [];
+
+        for (let i = 0; i < 20; i++) {
+          await new Promise((r) => setTimeout(r, 500));
+          const { data } = await axios.get(`/api/live-monitoring/frame/${testSessionId}`);
+          const frame = typeof data?.frame === 'string' ? data.frame : '';
+          const preds = Array.isArray(data?.predictions) ? data.predictions : [];
+          if (frame) lastFrame = frame;
+          if (preds.length) lastPreds = preds;
+          if (frame || preds.length) break;
+        }
+
+        if (lastFrame) {
+          setAnnotatedImage(lastFrame.startsWith('data:image') ? lastFrame : `data:image/jpeg;base64,${lastFrame}`);
+        }
+
+        const mapped: YoloDetection[] = (lastPreds || [])
+          .map((p: any) => {
+            const cls = String(p?.class ?? p?.class_name ?? '').trim();
+            const confRaw = typeof p?.confidence === 'number' ? p.confidence : Number(p?.confidence ?? 0);
+            const conf = Number.isFinite(confRaw) ? confRaw : 0;
+            const x = Number(p?.x ?? 0);
+            const y = Number(p?.y ?? 0);
+            const w = Number(p?.width ?? p?.w ?? 0);
+            const h = Number(p?.height ?? p?.h ?? 0);
+            if (!cls) return null;
+            return {
+              class_name: cls,
+              confidence: conf,
+              bbox: { x1: x - w / 2, y1: y - h / 2, x2: x + w / 2, y2: y + h / 2 }
+            } as YoloDetection;
+          })
+          .filter(Boolean) as YoloDetection[];
+
+        setYoloDetections(mapped);
+        showSuccess('Berhasil', `Detections: ${mapped.length}`);
+
+        try {
+          await axios.post('/api/live-monitoring/pipeline/stop', { session_id: testSessionId });
+        } catch {}
+        return;
+      }
+
       if (!cameraStream) {
         await startCamera();
       }
@@ -1224,10 +1286,19 @@ export default function LiveMonitoring() {
       setLastInferenceMs(Date.now() - startTime);
       showSuccess('Berhasil', `Detections: ${detections.length}`);
     } catch (error: any) {
-      const errorMessage = error.response?.data?.message || error.message || 'Unknown error';
+      const status = error?.response?.status;
+      const errorMessage =
+        error?.response?.data?.message ||
+        error?.response?.data?.error ||
+        error?.message ||
+        'Unknown error';
       setModelStatus('error');
       setFlaskError(errorMessage);
-      showError('Gagal', errorMessage);
+      if (status === 404) {
+        showError('Gagal', 'Endpoint Flask tidak tersedia. Jika memakai Pipeline, aktifkan Pipeline (Roboflow). Jika memakai Flask, jalankan flask_server.');
+      } else {
+        showError('Gagal', errorMessage);
+      }
     } finally {
       setIsTestingDetection(false);
     }
