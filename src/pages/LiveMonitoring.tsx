@@ -203,6 +203,7 @@ export default function LiveMonitoring() {
   const [pipelineRecordIntervalSec, setPipelineRecordIntervalSec] = useState(5);
   const [pipelineStatus, setPipelineStatus] = useState<'disconnected' | 'connected' | 'error'>('disconnected');
   const [pipelineError, setPipelineError] = useState<string>('');
+  const [pipelineRunnerState, setPipelineRunnerState] = useState<string>('');
 
   const selectedSubject = subjects.find((s) => s._id === selectedSubjectId) || null;
   
@@ -276,7 +277,11 @@ export default function LiveMonitoring() {
       const res = await axios.get('/api/live-monitoring/pipeline/health', { timeout: 5000 });
       if (res.data?.ok) {
         setPipelineStatus('connected');
-        setPipelineError('');
+        const statusRes = await axios.get('/api/live-monitoring/pipeline/status', { timeout: 5000 });
+        const state = String(statusRes.data?.pipeline_state || '');
+        const errMsg = String(statusRes.data?.pipeline_error || '');
+        setPipelineRunnerState(state);
+        setPipelineError(state === 'error' ? (errMsg || 'Pipeline error') : '');
         return { ok: true };
       }
       setPipelineStatus('error');
@@ -1997,6 +2002,11 @@ export default function LiveMonitoring() {
                 </div>
                 {pipelineError && (
                   <p className="text-xs text-red-600 mt-2">{pipelineError}</p>
+                )}
+                {pipelineRunnerState && (
+                  <div className="text-xs text-gray-600 mt-2">
+                    Runner State: {pipelineRunnerState}
+                  </div>
                 )}
                 <div className="text-xs text-gray-600 mt-2">
                   Pipeline mode tidak membutuhkan Flask YOLO lama.

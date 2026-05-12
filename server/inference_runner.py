@@ -17,6 +17,9 @@ active_session_id: Optional[str] = None
 pipeline_state: str = "idle"
 pipeline_error: str = ""
 terminate_requested: bool = False
+last_prediction_ms: int = 0
+last_prediction_count: int = 0
+last_frame_post_ms: int = 0
 
 latest_frame_by_session: Dict[str, Dict[str, Any]] = {}
 seat_stats: Dict[str, Dict[str, int]] = {}
@@ -178,6 +181,11 @@ def _build_sink(seats: List[dict], record_interval: int, session_id: str, jpeg_q
 
     def sink(predictions: dict, video_frame) -> None:
         raw_preds = predictions.get("predictions", []) or []
+        now_ms = int(time.time() * 1000)
+        with lock:
+            global last_prediction_ms, last_prediction_count
+            last_prediction_ms = now_ms
+            last_prediction_count = len(raw_preds)
 
         try:
             frame = video_frame.image
@@ -185,6 +193,9 @@ def _build_sink(seats: List[dict], record_interval: int, session_id: str, jpeg_q
             payload = {"session_id": session_id, "frame": frame_b64, "predictions": raw_preds, "timestamp": int(time.time() * 1000)}
             try:
                 requests.post(f"{EXPRESS_URL}/live-monitoring/frame", json=payload, timeout=0.5)
+                with lock:
+                    global last_frame_post_ms
+                    last_frame_post_ms = now_ms
             except Exception:
                 pass
         except Exception:
@@ -352,6 +363,9 @@ def http_status():
                 "seat_stats": seat_stats,
                 "pipeline_state": pipeline_state,
                 "pipeline_error": pipeline_error,
+                "last_prediction_ms": last_prediction_ms,
+                "last_prediction_count": last_prediction_count,
+                "last_frame_post_ms": last_frame_post_ms,
             }
         )
 
