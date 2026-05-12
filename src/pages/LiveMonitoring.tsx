@@ -1083,9 +1083,26 @@ export default function LiveMonitoring() {
           setAnnotatedImage(frame.startsWith('data:image') ? frame : `data:image/jpeg;base64,${frame}`);
         }
         const preds = Array.isArray(data?.predictions) ? data.predictions : [];
-        if (preds.length > 0) {
-          setYoloDetections([]);
-        }
+        const mapped: YoloDetection[] = preds
+          .map((p: any) => {
+            const cls = String(p?.class ?? p?.class_name ?? '').trim();
+            const confRaw = typeof p?.confidence === 'number' ? p.confidence : Number(p?.confidence ?? 0);
+            const conf = Number.isFinite(confRaw) ? confRaw : 0;
+
+            const x = Number(p?.x ?? 0);
+            const y = Number(p?.y ?? 0);
+            const w = Number(p?.width ?? p?.w ?? 0);
+            const h = Number(p?.height ?? p?.h ?? 0);
+
+            if (!cls) return null;
+            return {
+              class_name: cls,
+              confidence: conf,
+              bbox: { x1: x - w / 2, y1: y - h / 2, x2: x + w / 2, y2: y + h / 2 }
+            } as YoloDetection;
+          })
+          .filter(Boolean) as YoloDetection[];
+        setYoloDetections(mapped);
       } catch (error) {
       }
     }, 100);
@@ -2419,12 +2436,12 @@ export default function LiveMonitoring() {
               onMouseLeave={handleCanvasMouseUp}
             />
             
-            {!cameraStream && (
+            {!cameraStream && !(useInferencePipeline && annotatedImage) && (
               <div className="flex items-center justify-center h-full text-gray-400">
                 <div className="text-center">
                   <Camera className="h-12 w-12 mx-auto mb-2" />
-                  <p>Camera not active</p>
-                  <p className="text-sm">Start camera to begin</p>
+                  <p>{useInferencePipeline ? 'Pipeline feed belum ada frame' : 'Camera not active'}</p>
+                  <p className="text-sm">{useInferencePipeline ? 'Pastikan inference_runner berjalan & camera index benar' : 'Start camera to begin'}</p>
                 </div>
               </div>
             )}
@@ -2441,9 +2458,14 @@ export default function LiveMonitoring() {
               </div>
             )}
 
-            {modelStatus === 'active' && isMonitoring && (
+            {modelStatus === 'active' && isMonitoring && !useInferencePipeline && (
               <div className="absolute bottom-4 left-4 bg-green-500 text-white px-3 py-1 rounded-full text-sm font-medium">
                 MODEL ACTIVE
+              </div>
+            )}
+            {useInferencePipeline && isMonitoring && (
+              <div className="absolute bottom-4 left-4 bg-green-500 text-white px-3 py-1 rounded-full text-sm font-medium">
+                PIPELINE ACTIVE
               </div>
             )}
           </div>
