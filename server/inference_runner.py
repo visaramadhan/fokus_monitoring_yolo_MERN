@@ -47,6 +47,18 @@ def _load_dotenv(dotenv_path: str) -> None:
 
 _load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
+# Avoid Ultralytics/YOLO config permission issues on Windows by forcing a writable config dir.
+# Inference/ultralytics may try to write settings.json under AppData; this can fail in locked environments.
+_yolo_cfg_dir = os.environ.get("YOLO_CONFIG_DIR") or os.environ.get("ULTRALYTICS_SETTINGS_DIR") or ""
+if not _yolo_cfg_dir:
+    _yolo_cfg_dir = os.path.join(os.path.dirname(__file__), "runtime", "Ultralytics")
+try:
+    os.makedirs(_yolo_cfg_dir, exist_ok=True)
+except Exception:
+    _yolo_cfg_dir = os.path.dirname(__file__)
+os.environ.setdefault("YOLO_CONFIG_DIR", _yolo_cfg_dir)
+os.environ.setdefault("ULTRALYTICS_SETTINGS_DIR", _yolo_cfg_dir)
+
 
 def _env(name: str, default: str = "") -> str:
     val = os.environ.get(name)
