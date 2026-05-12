@@ -1,9 +1,43 @@
 import express from 'express';
 import SessionRecord from '../models/SessionRecord.js';
 import { auth } from '../middleware/auth.js';
-import XLSX from 'xlsx';
+import ExcelJS from 'exceljs';
 
 const router = express.Router();
+
+function addAoaWorksheet(workbook, name, rows) {
+  const ws = workbook.addWorksheet(name);
+  (rows || []).forEach((r) => ws.addRow(Array.isArray(r) ? r : [r]));
+  ws.columns.forEach((col) => {
+    let max = 10;
+    col.eachCell({ includeEmpty: true }, (cell) => {
+      const v = cell?.value;
+      const len = v === null || v === undefined ? 0 : String(v).length;
+      if (len > max) max = len;
+    });
+    col.width = Math.min(60, max + 2);
+  });
+  return ws;
+}
+
+function addJsonWorksheet(workbook, name, rows) {
+  const ws = workbook.addWorksheet(name);
+  const safeRows = Array.isArray(rows) ? rows : [];
+  const keys = safeRows.length > 0 ? Object.keys(safeRows[0]) : [];
+  ws.columns = keys.map((k) => ({ header: k, key: k, width: Math.min(60, Math.max(10, k.length + 2)) }));
+  safeRows.forEach((r) => ws.addRow(r));
+  ws.getRow(1).font = { bold: true };
+  ws.columns.forEach((col) => {
+    let max = col.width || 10;
+    col.eachCell({ includeEmpty: true }, (cell) => {
+      const v = cell?.value;
+      const len = v === null || v === undefined ? 0 : String(v).length;
+      if (len > max) max = len;
+    });
+    col.width = Math.min(60, max + 2);
+  });
+  return ws;
+}
 
 function parseTimeOnDate(baseDate, timeValue) {
   if (!timeValue) return null;
@@ -238,7 +272,7 @@ router.get('/export/:id', auth, async (req, res) => {
     }
 
     // Create workbook
-    const wb = XLSX.utils.book_new();
+    const wb = new ExcelJS.Workbook();
 
     // Session Info Sheet
     const sessionInfo = [
@@ -259,8 +293,6 @@ router.get('/export/:id', auth, async (req, res) => {
       ['Total Session Duration (minutes)', Math.round(record.detection_summary.total_session_duration / 60000)]
     ];
 
-    const wsInfo = XLSX.utils.aoa_to_sheet(sessionInfo);
-
     // Student Data Sheet
     const studentData = record.seat_data.map(seat => ({
       'Seat ID': seat.seat_id,
@@ -275,8 +307,6 @@ router.get('/export/:id', auth, async (req, res) => {
       'Gesture Changes': seat.gesture_history.length
     }));
 
-    const wsStudents = XLSX.utils.json_to_sheet(studentData);
-
     // Gesture Analysis Sheet
     const gestureData = record.gesture_analysis.map(analysis => ({
       'Gesture Type': analysis.gesture_type,
@@ -285,15 +315,14 @@ router.get('/export/:id', auth, async (req, res) => {
       'Percentage of Session': analysis.percentage_of_session.toFixed(2)
     }));
 
-    const wsGestures = XLSX.utils.json_to_sheet(gestureData);
-
     // Add sheets to workbook
-    XLSX.utils.book_append_sheet(wb, wsInfo, 'Session Info');
-    XLSX.utils.book_append_sheet(wb, wsStudents, 'Student Data');
-    XLSX.utils.book_append_sheet(wb, wsGestures, 'Gesture Analysis');
+    addAoaWorksheet(wb, 'Session Info', sessionInfo);
+    addJsonWorksheet(wb, 'Student Data', studentData);
+    addJsonWorksheet(wb, 'Gesture Analysis', gestureData);
 
     // Generate buffer
-    const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    const out = await wb.xlsx.writeBuffer();
+    const buffer = Buffer.isBuffer(out) ? out : Buffer.from(out);
 
     res.setHeader('Content-Disposition', `attachment; filename="session-${record.sessionName}-${record.tanggal.toISOString().split('T')[0]}.xlsx"`);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');

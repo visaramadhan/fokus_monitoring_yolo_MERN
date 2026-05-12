@@ -5,11 +5,45 @@ import SessionRecord from '../models/SessionRecord.js';
 import Kelas from '../models/Kelas.js';
 import MataKuliah from '../models/MataKuliah.js';
 import { auth } from '../middleware/auth.js';
-import XLSX from 'xlsx';
+import ExcelJS from 'exceljs';
 import PDFDocument from 'pdfkit';
 import mongoose from 'mongoose';
 
 const router = express.Router();
+
+function addAoaWorksheet(workbook, name, rows) {
+  const ws = workbook.addWorksheet(name);
+  (rows || []).forEach((r) => ws.addRow(Array.isArray(r) ? r : [r]));
+  ws.columns.forEach((col) => {
+    let max = 10;
+    col.eachCell({ includeEmpty: true }, (cell) => {
+      const v = cell?.value;
+      const len = v === null || v === undefined ? 0 : String(v).length;
+      if (len > max) max = len;
+    });
+    col.width = Math.min(60, max + 2);
+  });
+  return ws;
+}
+
+function addJsonWorksheet(workbook, name, rows) {
+  const ws = workbook.addWorksheet(name);
+  const safeRows = Array.isArray(rows) ? rows : [];
+  const keys = safeRows.length > 0 ? Object.keys(safeRows[0]) : [];
+  ws.columns = keys.map((k) => ({ header: k, key: k, width: Math.min(60, Math.max(10, k.length + 2)) }));
+  safeRows.forEach((r) => ws.addRow(r));
+  ws.getRow(1).font = { bold: true };
+  ws.columns.forEach((col) => {
+    let max = col.width || 10;
+    col.eachCell({ includeEmpty: true }, (cell) => {
+      const v = cell?.value;
+      const len = v === null || v === undefined ? 0 : String(v).length;
+      if (len > max) max = len;
+    });
+    col.width = Math.min(60, max + 2);
+  });
+  return ws;
+}
 
 // Export live session to Excel
 router.get('/excel/session/:sessionId', auth, async (req, res) => {
@@ -37,8 +71,7 @@ router.get('/excel/session/:sessionId', auth, async (req, res) => {
     }));
 
     // Create workbook
-    const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.json_to_sheet(excelData);
+    const wb = new ExcelJS.Workbook();
     
     // Add session info sheet
     const sessionInfo = [
@@ -53,10 +86,8 @@ router.get('/excel/session/:sessionId', auth, async (req, res) => {
       ['Lowest Focus', session.summary.lowestFocus.toFixed(2) + '%']
     ];
     
-    const wsInfo = XLSX.utils.aoa_to_sheet(sessionInfo);
-    
-    XLSX.utils.book_append_sheet(wb, wsInfo, 'Session Info');
-    XLSX.utils.book_append_sheet(wb, ws, 'Detection Data');
+    addAoaWorksheet(wb, 'Session Info', sessionInfo);
+    addJsonWorksheet(wb, 'Detection Data', excelData);
     
     // Add student data if available
     if (session.studentData && session.studentData.length > 0) {
@@ -69,12 +100,12 @@ router.get('/excel/session/:sessionId', auth, async (req, res) => {
         'Status': student.status
       }));
       
-      const wsStudents = XLSX.utils.json_to_sheet(studentData);
-      XLSX.utils.book_append_sheet(wb, wsStudents, 'Student Data');
+      addJsonWorksheet(wb, 'Student Data', studentData);
     }
 
     // Generate buffer
-    const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    const out = await wb.xlsx.writeBuffer();
+    const buffer = Buffer.isBuffer(out) ? out : Buffer.from(out);
 
     res.setHeader('Content-Disposition', `attachment; filename="focus-session-${sessionId}.xlsx"`);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -200,7 +231,7 @@ router.get('/excel/meeting/:meetingId', auth, async (req, res) => {
       return res.status(404).json({ message: 'Meeting not found' });
     }
 
-    const wb = XLSX.utils.book_new();
+    const wb = new ExcelJS.Workbook();
 
     const meetingInfo = [
       ['Meeting Information'],
@@ -214,7 +245,7 @@ router.get('/excel/meeting/:meetingId', auth, async (req, res) => {
       ['Overall Focus Rate (%)', Number(meeting.hasil_akhir_kelas?.fokus || 0)],
       ['Students Present', Number(meeting.hasil_akhir_kelas?.jumlah_hadir || 0)]
     ];
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(meetingInfo), 'Meeting Info');
+    addAoaWorksheet(wb, 'Meeting Info', meetingInfo);
 
     const studentRows = (meeting.data_fokus || []).map((s) => ({
       student_id: s.id_siswa,
@@ -224,9 +255,10 @@ router.get('/excel/meeting/:meetingId', auth, async (req, res) => {
       jumlah_sesi_fokus: s.jumlah_sesi_fokus,
       status: s.status
     }));
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(studentRows), 'Student Focus');
+    addJsonWorksheet(wb, 'Student Focus', studentRows);
 
-    const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    const out = await wb.xlsx.writeBuffer();
+    const buffer = Buffer.isBuffer(out) ? out : Buffer.from(out);
 
     res.setHeader('Content-Disposition', `attachment; filename="meeting-report-${meetingId}.xlsx"`);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -414,7 +446,7 @@ router.get('/excel/subject/:subjectId', auth, async (req, res) => {
     }));
 
     // Create workbook
-    const wb = XLSX.utils.book_new();
+    const wb = new ExcelJS.Workbook();
     
     // Subject info sheet
     const subjectInfo = [
@@ -429,17 +461,16 @@ router.get('/excel/subject/:subjectId', auth, async (req, res) => {
       ['Report Generated', new Date().toLocaleDateString()]
     ];
     
-    const wsInfo = XLSX.utils.aoa_to_sheet(subjectInfo);
-    XLSX.utils.book_append_sheet(wb, wsInfo, 'Subject Info');
+    addAoaWorksheet(wb, 'Subject Info', subjectInfo);
     
     // Meeting data sheet
     if (meetingData.length > 0) {
-      const wsMeetings = XLSX.utils.json_to_sheet(meetingData);
-      XLSX.utils.book_append_sheet(wb, wsMeetings, 'Meeting Data');
+      addJsonWorksheet(wb, 'Meeting Data', meetingData);
     }
 
     // Generate buffer
-    const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    const out = await wb.xlsx.writeBuffer();
+    const buffer = Buffer.isBuffer(out) ? out : Buffer.from(out);
 
     res.setHeader('Content-Disposition', `attachment; filename="subject-${subject.nama}-data.xlsx"`);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
