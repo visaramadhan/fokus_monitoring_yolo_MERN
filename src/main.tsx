@@ -4,7 +4,8 @@ import axios from 'axios';
 import App from './App.tsx';
 import './index.css';
 
-axios.defaults.baseURL = '';
+const apiBaseUrl = String(import.meta.env.VITE_API_BASE_URL || '').trim().replace(/\/+$/, '');
+axios.defaults.baseURL = apiBaseUrl;
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
