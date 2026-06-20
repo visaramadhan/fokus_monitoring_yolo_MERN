@@ -58,10 +58,10 @@ export default function Login() {
             </motion.div>
           </div>
           <h2 className="mt-6 text-center text-3xl font-extrabold bg-gradient-to-r from-gray-900 to-gray-600 bg-clip-text text-transparent">
-            Welcome Back
+            Selamat Datang Guru
           </h2>
           <p className="mt-2 text-center text-sm text-gray-600">
-            Sign in to your FocusMonitor account
+            Login to your FocusMonitor account
           </p>
         </motion.div>
         
