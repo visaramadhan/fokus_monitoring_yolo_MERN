@@ -7,6 +7,8 @@ import checkDiskSpace from 'check-disk-space';
 import multer from 'multer';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
+import http from 'http';
+import https from 'https';
 import authRoutes from './routes/auth.js';
 import userRoutes from './routes/users.js';
 import kelasRoutes from './routes/kelas.js';
@@ -211,9 +213,26 @@ async function initDatabase() {
 
 initDatabase();
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`Health check: http://localhost:${PORT}/health`);
-  console.log(`Flask integration available at: http://localhost:${PORT}/flask`);
-  console.log(`Models directory: ${uploadsDir}`);
-});
+const sslKeyPath = process.env.SSL_KEY_PATH;
+const sslCertPath = process.env.SSL_CERT_PATH;
+const httpsEnabled = String(process.env.HTTPS_ENABLED || '').toLowerCase() === 'true' || (sslKeyPath && sslCertPath);
+
+if (httpsEnabled) {
+  const key = sslKeyPath ? fs.readFileSync(sslKeyPath) : null;
+  const cert = sslCertPath ? fs.readFileSync(sslCertPath) : null;
+  const server = https.createServer({ key, cert }, app);
+  server.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+    console.log(`Health check: https://localhost:${PORT}/health`);
+    console.log(`Flask integration available at: https://localhost:${PORT}/flask`);
+    console.log(`Models directory: ${uploadsDir}`);
+  });
+} else {
+  const server = http.createServer(app);
+  server.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+    console.log(`Health check: http://localhost:${PORT}/health`);
+    console.log(`Flask integration available at: http://localhost:${PORT}/flask`);
+    console.log(`Models directory: ${uploadsDir}`);
+  });
+}

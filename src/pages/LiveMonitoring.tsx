@@ -1225,6 +1225,23 @@ export default function LiveMonitoring() {
           if (frame || preds.length) break;
         }
 
+        try {
+          const st = await axios.get('/api/live-monitoring/pipeline/status', { timeout: 5000 });
+          const runnerState = String(st.data?.pipeline_state || '');
+          const runnerErr = String(st.data?.pipeline_error || '');
+          const wfErr = String(st.data?.last_workflow_error || '');
+          const wfCode = Number(st.data?.last_workflow_status_code || 0);
+          if (runnerState === 'error') {
+            showError('Gagal', runnerErr || wfErr || 'Pipeline error');
+            return;
+          }
+          if (wfErr) {
+            const msg = wfCode ? `${wfErr} (HTTP ${wfCode})` : wfErr;
+            showError('Gagal', msg);
+            return;
+          }
+        } catch {}
+
         if (lastFrame) {
           setAnnotatedImage(lastFrame.startsWith('data:image') ? lastFrame : `data:image/jpeg;base64,${lastFrame}`);
         }
@@ -1248,6 +1265,10 @@ export default function LiveMonitoring() {
           .filter(Boolean) as YoloDetection[];
 
         setYoloDetections(mapped);
+        if (!lastFrame && mapped.length === 0) {
+          showError('Gagal', 'Tidak ada frame/prediksi dari runner. Cek /api/live-monitoring/pipeline/status untuk detail error.');
+          return;
+        }
         showSuccess('Berhasil', `Detections: ${mapped.length}`);
 
         try {
@@ -1297,12 +1318,25 @@ export default function LiveMonitoring() {
         error?.response?.data?.error ||
         error?.message ||
         'Unknown error';
-      setModelStatus('error');
-      setFlaskError(errorMessage);
-      if (status === 404) {
-        showError('Gagal', 'Endpoint Flask tidak tersedia. Jika memakai Pipeline, aktifkan Pipeline (Roboflow). Jika memakai Flask, jalankan flask_server.');
+      if (useInferencePipeline) {
+        const msg =
+          status === 502
+            ? 'Backend Express tidak bisa diakses (pastikan server berjalan di http://127.0.0.1:5002).'
+            : errorMessage;
+        setPipelineStatus('error');
+        setPipelineError(msg);
+        showError('Gagal', msg);
       } else {
-        showError('Gagal', errorMessage);
+        setModelStatus('error');
+        setFlaskError(errorMessage);
+        if (status === 404) {
+          showError(
+            'Gagal',
+            'Endpoint Flask tidak tersedia. Jika memakai Pipeline, aktifkan Pipeline (Roboflow). Jika memakai Flask, jalankan flask_server.'
+          );
+        } else {
+          showError('Gagal', errorMessage);
+        }
       }
     } finally {
       setIsTestingDetection(false);

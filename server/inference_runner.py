@@ -20,6 +20,11 @@ terminate_requested: bool = False
 last_prediction_ms: int = 0
 last_prediction_count: int = 0
 last_frame_post_ms: int = 0
+last_camera_read_ms: int = 0
+camera_read_failures: int = 0
+last_workflow_call_ms: int = 0
+last_workflow_status_code: int = 0
+last_workflow_error: str = ""
 
 latest_frame_by_session: Dict[str, Dict[str, Any]] = {}
 seat_stats: Dict[str, Dict[str, int]] = {}
@@ -40,7 +45,9 @@ def _load_dotenv(dotenv_path: str) -> None:
                 value = value.strip().strip("'").strip('"')
                 if not key:
                     continue
-                os.environ.setdefault(key, value)
+                current = os.environ.get(key)
+                if current is None or str(current).strip() in {"", "CHANGE_ME"}:
+                    os.environ[key] = value
     except Exception:
         return
 
@@ -73,22 +80,240 @@ def _split_set(value: str) -> set:
 
 ROBOFLOW_API_KEY = _env("ROBOFLOW_API_KEY", "")
 MODEL_ID = _env("ROBOFLOW_MODEL_ID", "")
+ROBOFLOW_WORKFLOW_URL = _env(
+    "ROBOFLOW_WORKFLOW_URL",
+    "https://serverless.roboflow.com/infer/workflows/visa-ramadhan/detect-and-classify",
+)
 EXPRESS_URL = _env("EXPRESS_URL", "http://127.0.0.1:5002")
 
 FOCUS_CLASSES = _split_set(_env("FOCUS_CLASSES", "memperhatikan,focused"))
 NONFOCUS_CLASSES = _split_set(_env("NONFOCUS_CLASSES", "tidur,menggunakan ponsel,phone,main_hp,balikbadan,chatting"))
 
 
-def _require_deps():
+def _bool_env(name: str, default: bool = False) -> bool:
+    raw = _env(name, "1" if default else "0").strip().lower()
+    return raw in {"1", "true", "yes", "y", "on"}
+
+
+def _require_deps_base():
     try:
         import cv2  # noqa: F401
         import numpy as np  # noqa: F401
+    except Exception as e:
+        raise RuntimeError("Missing Python dependencies. Install: pip install opencv-python numpy requests") from e
+
+
+def _require_deps_inference_pipeline():
+    try:
         from inference import InferencePipeline  # noqa: F401
         from inference.core.interfaces.camera.entities import VideoFrame  # noqa: F401
     except Exception as e:
         raise RuntimeError(
             "Missing Python dependencies for InferencePipeline. Install: pip install inference inference-sdk opencv-python numpy"
         ) from e
+
+
+class _RoboflowWorkflowHttpError(RuntimeError):
+    def __init__(self, status_code: int, message: str):
+        super().__init__(message)
+        self.status_code = int(status_code or 0)
+
+
+def _call_roboflow_workflow(image_b64: str) -> dict:
+    if not ROBOFLOW_API_KEY:
+        raise RuntimeError("ROBOFLOW_API_KEY is not set")
+    url = (ROBOFLOW_WORKFLOW_URL or "").strip()
+    if not url:
+        raise RuntimeError("ROBOFLOW_WORKFLOW_URL is not set")
+
+    res = requests.post(
+        url,
+        json={
+            "api_key": ROBOFLOW_API_KEY,
+            "inputs": {"image": {"type": "base64", "value": image_b64}},
+        },
+        timeout=20,
+    )
+    if not res.ok:
+        raise _RoboflowWorkflowHttpError(int(res.status_code or 0), f"Roboflow workflow error {res.status_code}: {res.text[:300]}")
+    return res.json() or {}
+
+
+def _extract_workflow_output(result: dict) -> dict:
+    outputs = result.get("outputs")
+    if isinstance(outputs, list) and outputs:
+        out0 = outputs[0]
+        return out0 if isinstance(out0, dict) else {}
+    return {}
+
+
+def _open_camera_capture(camera_index: int):
+    import cv2
+
+    pref = _env("CAMERA_BACKEND", "").strip().lower()
+    backend_order = []
+    if pref in {"dshow", "directshow"}:
+        backend_order = [cv2.CAP_DSHOW, cv2.CAP_MSMF, 0]
+    elif pref in {"msmf"}:
+        backend_order = [cv2.CAP_MSMF, cv2.CAP_DSHOW, 0]
+    else:
+        backend_order = [cv2.CAP_DSHOW, cv2.CAP_MSMF, 0]
+
+    for backend in backend_order:
+        try:
+            cap = cv2.VideoCapture(int(camera_index), backend) if backend else cv2.VideoCapture(int(camera_index))
+            if not cap or not cap.isOpened():
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+                continue
+
+            try:
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            except Exception:
+                pass
+
+            for _ in range(8):
+                ok, frame = cap.read()
+                if ok and frame is not None:
+                    return cap
+                time.sleep(0.05)
+
+            try:
+                cap.release()
+            except Exception:
+                pass
+        except Exception:
+            continue
+
+    raise RuntimeError(
+        f"Cannot open camera index {camera_index} (check Windows camera permission, close other apps using camera, or change camera index / CAMERA_BACKEND)"
+    )
+
+
+def _workflow_loop(camera_index: int, seats: List[dict], session_id: str, max_fps: int, record_interval: int, jpeg_quality: int):
+    import cv2
+
+    global current_pipeline, pipeline_state, terminate_requested
+    global last_prediction_ms, last_prediction_count, last_frame_post_ms
+    global last_camera_read_ms, camera_read_failures
+    global last_workflow_call_ms, last_workflow_status_code, last_workflow_error
+
+    cap = _open_camera_capture(int(camera_index))
+
+    last_record = time.time()
+    fps = max(1, int(max_fps) or 1)
+    min_interval = 1.0 / float(fps)
+    next_ts = 0.0
+    consecutive_read_failures = 0
+    consecutive_workflow_failures = 0
+    did_reopen = False
+
+    with lock:
+        current_pipeline = {"mode": "workflow"}
+        pipeline_state = "running"
+        last_workflow_error = ""
+        last_workflow_status_code = 0
+        camera_read_failures = 0
+
+    try:
+        while True:
+            with lock:
+                if terminate_requested:
+                    break
+            now = time.time()
+            if now < next_ts:
+                time.sleep(min(0.05, next_ts - now))
+                continue
+            next_ts = now + min_interval
+
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                consecutive_read_failures += 1
+                with lock:
+                    camera_read_failures += 1
+                if consecutive_read_failures >= 60:
+                    if not did_reopen:
+                        did_reopen = True
+                        try:
+                            cap.release()
+                        except Exception:
+                            pass
+                        cap = _open_camera_capture(int(camera_index))
+                        consecutive_read_failures = 0
+                        continue
+                    raise RuntimeError("Camera read failed continuously (check camera permission / index / device busy)")
+                time.sleep(0.05)
+                continue
+            consecutive_read_failures = 0
+            with lock:
+                last_camera_read_ms = int(time.time() * 1000)
+
+            ok2, buffer = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), int(jpeg_quality)])
+            if not ok2:
+                continue
+            base64_image = base64.b64encode(buffer.tobytes()).decode("utf-8")
+
+            try:
+                result = _call_roboflow_workflow(base64_image)
+                with lock:
+                    last_workflow_call_ms = int(time.time() * 1000)
+                    last_workflow_status_code = 200
+                    last_workflow_error = ""
+                consecutive_workflow_failures = 0
+            except Exception as e:
+                consecutive_workflow_failures += 1
+                with lock:
+                    last_workflow_call_ms = int(time.time() * 1000)
+                    last_workflow_status_code = int(getattr(e, "status_code", 0) or 0)
+                    last_workflow_error = str(e)
+                if consecutive_workflow_failures >= 5:
+                    raise
+                time.sleep(0.2)
+                continue
+
+            out = _extract_workflow_output(result)
+
+            raw_preds = out.get("predictions", None)
+            if raw_preds is None:
+                raw_preds = out.get("detection_predictions", []) or []
+            if not isinstance(raw_preds, list):
+                raw_preds = []
+
+            output_image = out.get("output_image") or {}
+            annotated_b64 = output_image.get("value") if isinstance(output_image, dict) else None
+            frame_b64 = annotated_b64 or base64_image
+
+            now_ms = int(time.time() * 1000)
+            with lock:
+                last_prediction_ms = now_ms
+                last_prediction_count = len(raw_preds)
+
+            try:
+                payload = {"session_id": session_id, "frame": frame_b64, "predictions": raw_preds, "timestamp": now_ms}
+                requests.post(f"{EXPRESS_URL}/live-monitoring/frame", json=payload, timeout=1.5)
+                with lock:
+                    last_frame_post_ms = now_ms
+            except Exception:
+                pass
+
+            now2 = time.time()
+            if now2 - last_record >= float(record_interval):
+                last_record = now2
+                try:
+                    _record_seat_status(raw_preds, seats)
+                except Exception:
+                    pass
+    finally:
+        try:
+            cap.release()
+        except Exception:
+            pass
+        with lock:
+            current_pipeline = None
+            if pipeline_state == "running":
+                pipeline_state = "idle"
 
 
 def _draw_predictions(frame_bgr, predictions_list: List[dict]):
@@ -239,9 +464,23 @@ def start_pipeline(camera_index: int, seats: List[dict], session_id: str, confid
     def run():
         global current_pipeline, pipeline_state, pipeline_error, terminate_requested
         try:
-            _require_deps()
             if not ROBOFLOW_API_KEY:
                 raise RuntimeError("ROBOFLOW_API_KEY is not set")
+            _require_deps_base()
+
+            use_workflow = _bool_env("USE_ROBOFLOW_WORKFLOW", True)
+            if use_workflow:
+                _workflow_loop(
+                    camera_index=int(camera_index),
+                    seats=seats,
+                    session_id=session_id,
+                    max_fps=int(max_fps),
+                    record_interval=int(record_interval),
+                    jpeg_quality=int(jpeg_quality),
+                )
+                return
+
+            _require_deps_inference_pipeline()
             if not MODEL_ID:
                 raise RuntimeError("ROBOFLOW_MODEL_ID is not set (example: project/1)")
 
@@ -378,6 +617,11 @@ def http_status():
                 "last_prediction_ms": last_prediction_ms,
                 "last_prediction_count": last_prediction_count,
                 "last_frame_post_ms": last_frame_post_ms,
+                "last_camera_read_ms": last_camera_read_ms,
+                "camera_read_failures": camera_read_failures,
+                "last_workflow_call_ms": last_workflow_call_ms,
+                "last_workflow_status_code": last_workflow_status_code,
+                "last_workflow_error": last_workflow_error,
             }
         )
 
