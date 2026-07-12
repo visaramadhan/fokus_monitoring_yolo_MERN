@@ -64,6 +64,10 @@ interface DetectionData {
 interface LiveSession {
   _id: string;
   sessionId: string;
+  jadwal_id?: string | { _id: string } | null;
+  kelas_id?: string | { _id: string } | null;
+  mata_kuliah_id?: string | { _id: string } | null;
+  dosen_id?: string | { _id: string } | null;
   kelas: string;
   mata_kuliah: string;
   startTime: string;
@@ -85,10 +89,11 @@ interface CameraDevice {
 interface Schedule {
   seat_positions: any;
   _id: string;
+  kelas_id?: string | { _id: string } | null;
   kelas: string;
   mata_kuliah: string;
-  mata_kuliah_id: string;
-  dosen_id: string;
+  mata_kuliah_id: string | { _id: string };
+  dosen_id: string | { _id: string };
   dosen_name: string;
   tanggal: string;
   jam_mulai: string;
@@ -927,7 +932,9 @@ export default function LiveMonitoring() {
       const toId = (value: any) => (typeof value === 'string' ? value : value?._id);
 
       const response = await axios.post('/api/live-monitoring/start', {
+        jadwal_id: selectedSchedule,
         kelas: schedule.kelas,
+        kelas_id: toId((schedule as any).kelas_id),
         mata_kuliah_id: toId(schedule.mata_kuliah_id) || schedule.mata_kuliah_id,
         mata_kuliah: schedule.mata_kuliah,
         sessionName: sessionName || `${schedule.mata_kuliah} - ${schedule.kelas}`,
@@ -1674,6 +1681,8 @@ export default function LiveMonitoring() {
 
       const toId = (value: any) => (typeof value === 'string' ? value : value?._id);
       const mataKuliahId = toId(schedule.mata_kuliah_id) || schedule.mata_kuliah_id;
+      const kelasId = toId((schedule as any).kelas_id) || toId((currentSession as any)?.kelas_id);
+      const jadwalId = selectedSchedule || toId((currentSession as any)?.jadwal_id);
       const dosenId = toId(schedule.dosen_id) || (user?.role === 'admin' ? selectedDosenId : user?.id);
 
       const pipelineSeatResults = opts?.pipelineSeatResults && typeof opts?.pipelineSeatResults === 'object' ? opts.pipelineSeatResults : null;
@@ -1737,6 +1746,10 @@ export default function LiveMonitoring() {
       // Save to database
       const response = await axios.post('/api/session-records', {
         sessionId: currentSession.sessionId,
+        liveSessionId: currentSession._id,
+        jadwalId,
+        kelasId,
+        mataKuliahId,
         sessionName: sessionName || `${schedule.mata_kuliah} - ${schedule.kelas}`,
         className: schedule.kelas,
         subjectName: schedule.mata_kuliah,
@@ -1758,6 +1771,9 @@ export default function LiveMonitoring() {
 
       await axios.post('/api/pertemuan', {
         sessionId: currentSession.sessionId,
+        live_session_id: currentSession._id,
+        jadwal_id: jadwalId,
+        kelas_id: kelasId,
         tanggal: schedule.tanggal || new Date(),
         pertemuan_ke: schedule.pertemuan_ke || 1,
         kelas: schedule.kelas,

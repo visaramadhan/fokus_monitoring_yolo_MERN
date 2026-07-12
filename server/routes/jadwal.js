@@ -1,81 +1,82 @@
 import express from 'express';
 import mongoose from 'mongoose';
 import { auth } from '../middleware/auth.js';
+import Schedule from '../models/Schedule.js';
+import Kelas from '../models/Kelas.js';
+import MataKuliah from '../models/MataKuliah.js';
+import User from '../models/User.js';
 
 const router = express.Router();
 
-// Schedule Schema
-const scheduleSchema = new mongoose.Schema({
-  kelas: {
-    type: String,
-    required: true
-  },
-  mata_kuliah: {
-    type: String,
-    required: true
-  },
-  mata_kuliah_id: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'MataKuliah',
-    required: true
-  
-  },
-  dosen_id: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    required: true
-  },
-  dosen_name: {
-    type: String,
-    required: true
-  },
-  tanggal: {
-    type: Date,
-    required: true
-  },
-  jam_mulai: {
-    type: String,
-    required: true
-  },
-  jam_selesai: {
-    type: String,
-    required: true
-  },
-  durasi: {
-    type: Number,
-    required: true
-  },
-  pertemuan_ke: {
-    type: Number,
-    required: true,
-    min: 1
-  },
-  topik: {
-    type: String,
-    default: ''
-  },
-  ruangan: {
-    type: String,
-    default: ''
-  },
-  status: {
-    type: String,
-    enum: ['scheduled', 'ongoing', 'completed', 'cancelled'],
-    default: 'scheduled'
-  },
-  seat_positions: [{
-    seat_id: { type: Number, required: true },
-    x: { type: Number, required: true },
-    y: { type: Number, required: true },
-    width: { type: Number, required: true },
-    height: { type: Number, required: true },
-    student_id: { type: String, required: true }
-  }]
-}, {
-  timestamps: true
-});
+function toObjectIdOrNull(value) {
+  const raw = typeof value === 'string' ? value : value?._id || value?.id;
+  if (!raw) return null;
+  if (!mongoose.Types.ObjectId.isValid(String(raw))) return null;
+  return new mongoose.Types.ObjectId(String(raw));
+}
 
-const Schedule = mongoose.model('Schedule', scheduleSchema);
+async function enrichSchedulePayload(payload = {}, existing = null) {
+  const next = { ...payload };
+
+  const mataKuliahObjectId = toObjectIdOrNull(next.mata_kuliah_id) || toObjectIdOrNull(existing?.mata_kuliah_id);
+  if (!mataKuliahObjectId) {
+    const error = new Error('Invalid mata_kuliah_id');
+    error.status = 400;
+    throw error;
+  }
+
+  const mataKuliahDoc = await MataKuliah.findById(mataKuliahObjectId).select('nama kode dosen_id');
+  if (!mataKuliahDoc) {
+    const error = new Error('Mata kuliah not found');
+    error.status = 404;
+    throw error;
+  }
+  next.mata_kuliah_id = mataKuliahObjectId;
+  next.mata_kuliah = mataKuliahDoc.nama;
+
+  let dosenObjectId = toObjectIdOrNull(next.dosen_id) || toObjectIdOrNull(existing?.dosen_id);
+  if (!dosenObjectId && mataKuliahDoc.dosen_id) {
+    dosenObjectId = new mongoose.Types.ObjectId(String(mataKuliahDoc.dosen_id));
+  }
+  if (!dosenObjectId) {
+    const error = new Error('Invalid dosen_id');
+    error.status = 400;
+    throw error;
+  }
+
+  const dosenDoc = await User.findById(dosenObjectId).select('nama_lengkap');
+  if (!dosenDoc) {
+    const error = new Error('Dosen not found');
+    error.status = 404;
+    throw error;
+  }
+  next.dosen_id = dosenObjectId;
+  next.dosen_name = dosenDoc.nama_lengkap;
+
+  let kelasDoc = null;
+  const kelasObjectId = toObjectIdOrNull(next.kelas_id) || toObjectIdOrNull(existing?.kelas_id);
+  if (kelasObjectId) {
+    kelasDoc = await Kelas.findById(kelasObjectId).select('nama_kelas');
+    if (!kelasDoc) {
+      const error = new Error('Kelas not found');
+      error.status = 404;
+      throw error;
+    }
+  } else {
+    const kelasName = String(next.kelas || existing?.kelas || '').trim();
+    if (!kelasName) {
+      const error = new Error('kelas is required');
+      error.status = 400;
+      throw error;
+    }
+    kelasDoc = await Kelas.findOne({ nama_kelas: kelasName }).select('nama_kelas');
+  }
+
+  next.kelas_id = kelasDoc?._id || null;
+  next.kelas = kelasDoc?.nama_kelas || String(next.kelas || existing?.kelas || '').trim();
+
+  return next;
+}
 
 // Get all schedules
 router.get('/', auth, async (req, res) => {
@@ -125,13 +126,14 @@ router.get('/', auth, async (req, res) => {
     }
 
     const schedules = await Schedule.find(query)
+      .populate('kelas_id', 'nama_kelas tahun_ajaran semester')
       .populate('mata_kuliah_id', 'nama kode')
       .populate('dosen_id', 'nama_lengkap')
       .sort({ tanggal: -1 });
     
     res.json(schedules);
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    res.status(error.status || 500).json({ message: error.message });
   }
 });
 
@@ -139,6 +141,7 @@ router.get('/', auth, async (req, res) => {
 router.get('/:id', auth, async (req, res) => {
   try {
     const schedule = await Schedule.findById(req.params.id)
+      .populate('kelas_id', 'nama_kelas tahun_ajaran semester')
       .populate('mata_kuliah_id', 'nama kode sks')
       .populate('dosen_id', 'nama_lengkap email departemen');
     
@@ -153,16 +156,18 @@ router.get('/:id', auth, async (req, res) => {
     
     res.json(schedule);
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    res.status(error.status || 500).json({ message: error.message });
   }
 });
 
 // Create new schedule
 router.post('/', auth, async (req, res) => {
   try {
-    const schedule = new Schedule(req.body);
+    const payload = await enrichSchedulePayload(req.body);
+    const schedule = new Schedule(payload);
     await schedule.save();
     await schedule.populate([
+      { path: 'kelas_id', select: 'nama_kelas tahun_ajaran semester' },
       { path: 'mata_kuliah_id', select: 'nama kode' },
       { path: 'dosen_id', select: 'nama_lengkap' }
     ]);
@@ -198,11 +203,13 @@ router.put('/:id', auth, async (req, res) => {
       }
     }
 
+    const payload = await enrichSchedulePayload(req.body, schedule);
     const updatedSchedule = await Schedule.findByIdAndUpdate(
       req.params.id,
-      req.body,
+      payload,
       { new: true, runValidators: true }
     ).populate([
+      { path: 'kelas_id', select: 'nama_kelas tahun_ajaran semester' },
       { path: 'mata_kuliah_id', select: 'nama kode' },
       { path: 'dosen_id', select: 'nama_lengkap' }
     ]);

@@ -3,6 +3,8 @@
 import express from 'express';
 import axios from 'axios';
 import LiveSession from '../models/LiveSession.js';
+import Schedule from '../models/Schedule.js';
+import Kelas from '../models/Kelas.js';
 import { auth } from '../middleware/auth.js';
 import { v4 as uuidv4 } from 'uuid';
 import mongoose from 'mongoose';
@@ -11,6 +13,13 @@ const router = express.Router();
 
 const INFERENCE_URL = process.env.INFERENCE_URL || 'http://127.0.0.1:5001';
 const latestFrames = new Map();
+
+function toObjectIdOrNull(value) {
+  const raw = typeof value === 'string' ? value : value?._id || value?.id;
+  if (!raw) return null;
+  if (!mongoose.Types.ObjectId.isValid(String(raw))) return null;
+  return new mongoose.Types.ObjectId(String(raw));
+}
 
 router.post('/frame', (req, res) => {
   try {
@@ -116,41 +125,63 @@ router.get('/pipeline/status', auth, async (req, res) => {
 // Start live monitoring session
 router.post('/start', auth, async (req, res) => {
   try {
-    const { kelas, mata_kuliah_id, mata_kuliah, dosen_id } = req.body || {};
+    const { jadwal_id, kelas, mata_kuliah_id, mata_kuliah, dosen_id } = req.body || {};
 
-    const kelasStr = String(kelas || '').trim();
-    const mataKuliahStr = String(mata_kuliah || '').trim();
-    const rawMk =
-      typeof mata_kuliah_id === 'string'
-        ? mata_kuliah_id
-        : (mata_kuliah_id?._id || mata_kuliah_id?.id || '').toString();
-    const mkIdStr = String(rawMk || '').trim();
-
-    if (!kelasStr) return res.status(400).json({ message: 'kelas is required' });
-    if (!mataKuliahStr) return res.status(400).json({ message: 'mata_kuliah is required' });
-    if (!mkIdStr) return res.status(400).json({ message: 'mata_kuliah_id is required' });
-    if (!mongoose.Types.ObjectId.isValid(mkIdStr)) {
-      return res.status(400).json({ message: 'Invalid mata_kuliah_id' });
-    }
-
+    let scheduleDoc = null;
+    let kelasIdToUse = null;
+    let kelasStr = String(kelas || '').trim();
+    let mataKuliahStr = String(mata_kuliah || '').trim();
+    let mkObjectId = toObjectIdOrNull(mata_kuliah_id);
     let dosenIdToUse = req.user._id;
-    if (req.user.role === 'admin') {
-      if (!dosen_id) return res.status(400).json({ message: 'dosen_id is required for admin' });
-      const raw = String(dosen_id);
-      if (!mongoose.Types.ObjectId.isValid(raw)) return res.status(400).json({ message: 'Invalid dosen_id' });
-      dosenIdToUse = new mongoose.Types.ObjectId(raw);
+
+    const jadwalObjectId = toObjectIdOrNull(jadwal_id);
+    if (jadwalObjectId) {
+      scheduleDoc = await Schedule.findById(jadwalObjectId);
+      if (!scheduleDoc) {
+        return res.status(404).json({ message: 'Schedule not found' });
+      }
+      if (req.user.role === 'dosen' && String(scheduleDoc.dosen_id) !== String(req.user._id)) {
+        return res.status(403).json({ message: 'Access denied' });
+      }
+      kelasIdToUse = scheduleDoc.kelas_id || null;
+      kelasStr = String(scheduleDoc.kelas || '').trim();
+      mataKuliahStr = String(scheduleDoc.mata_kuliah || '').trim();
+      mkObjectId = scheduleDoc.mata_kuliah_id ? new mongoose.Types.ObjectId(String(scheduleDoc.mata_kuliah_id)) : null;
+      dosenIdToUse = new mongoose.Types.ObjectId(String(scheduleDoc.dosen_id));
+    } else {
+      if (!kelasStr) return res.status(400).json({ message: 'kelas is required' });
+      if (!mataKuliahStr) return res.status(400).json({ message: 'mata_kuliah is required' });
+      if (!mkObjectId) {
+        return res.status(400).json({ message: 'Invalid mata_kuliah_id' });
+      }
+
+      if (req.user.role === 'admin') {
+        const adminDosenId = toObjectIdOrNull(dosen_id);
+        if (!adminDosenId) return res.status(400).json({ message: 'Invalid dosen_id' });
+        dosenIdToUse = adminDosenId;
+      }
+
+      const kelasDoc = await Kelas.findOne({ nama_kelas: kelasStr }).select('_id nama_kelas');
+      if (kelasDoc) {
+        kelasIdToUse = kelasDoc._id;
+        kelasStr = kelasDoc.nama_kelas;
+      }
     }
     
     const sessionId = uuidv4();
     const liveSession = new LiveSession({
       sessionId,
+      jadwal_id: scheduleDoc?._id || jadwalObjectId || null,
+      kelas_id: kelasIdToUse,
       kelas: kelasStr,
       mata_kuliah: mataKuliahStr,
-      mata_kuliah_id: new mongoose.Types.ObjectId(mkIdStr),
+      mata_kuliah_id: mkObjectId,
       dosen_id: dosenIdToUse
     });
 
     await liveSession.save();
+    await liveSession.populate('jadwal_id', 'tanggal jam_mulai jam_selesai pertemuan_ke status');
+    await liveSession.populate('kelas_id', 'nama_kelas tahun_ajaran semester');
     await liveSession.populate('mata_kuliah_id', 'nama kode');
     await liveSession.populate('dosen_id', 'nama_lengkap');
 
@@ -238,6 +269,8 @@ router.get('/session/:sessionId', auth, async (req, res) => {
     const { sessionId } = req.params;
     
     const liveSession = await LiveSession.findOne({ sessionId })
+      .populate('jadwal_id', 'tanggal jam_mulai jam_selesai pertemuan_ke status')
+      .populate('kelas_id', 'nama_kelas tahun_ajaran semester')
       .populate('mata_kuliah_id', 'nama kode')
       .populate('dosen_id', 'nama_lengkap');
 
@@ -255,6 +288,8 @@ router.get('/session/:sessionId', auth, async (req, res) => {
 router.get('/sessions', auth, async (req, res) => {
   try {
     const sessions = await LiveSession.find()
+      .populate('jadwal_id', 'tanggal jam_mulai jam_selesai pertemuan_ke status')
+      .populate('kelas_id', 'nama_kelas tahun_ajaran semester')
       .populate('mata_kuliah_id', 'nama kode')
       .populate('dosen_id', 'nama_lengkap')
       .sort({ startTime: -1 });
@@ -269,6 +304,8 @@ router.get('/sessions', auth, async (req, res) => {
 router.get('/active', auth, async (req, res) => {
   try {
     const activeSessions = await LiveSession.find({ isActive: true })
+      .populate('jadwal_id', 'tanggal jam_mulai jam_selesai pertemuan_ke status')
+      .populate('kelas_id', 'nama_kelas tahun_ajaran semester')
       .populate('mata_kuliah_id', 'nama kode')
       .populate('dosen_id', 'nama_lengkap');
 

@@ -71,6 +71,16 @@ const liveSessionSchema = new mongoose.Schema({
     required: true,
     unique: true
   },
+  jadwal_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Schedule',
+    default: null
+  },
+  kelas_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Kelas',
+    default: null
+  },
   kelas: {
     type: String,
     required: true
@@ -134,6 +144,9 @@ const liveSessionSchema = new mongoose.Schema({
 }, {
   timestamps: true
 });
+
+liveSessionSchema.index({ jadwal_id: 1, isActive: 1 });
+liveSessionSchema.index({ kelas_id: 1, startTime: -1 });
 
 liveSessionSchema.pre('save', function(next) {
   if (this.detectionData && this.detectionData.length > 0) {

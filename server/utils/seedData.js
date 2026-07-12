@@ -4,39 +4,24 @@ import MataKuliah from '../models/MataKuliah.js';
 import Pertemuan from '../models/Pertemuan.js';
 import LiveSession from '../models/LiveSession.js';
 import SessionRecord from '../models/SessionRecord.js';
+import Schedule from '../models/Schedule.js';
 import mongoose from 'mongoose';
 
 export async function purgeAllData() {
-  const ScheduleModel = (() => {
-    try {
-      return mongoose.model('Schedule');
-    } catch (e) {
-      return null;
-    }
-  })();
-
   const operations = [
     SessionRecord.deleteMany({}),
     LiveSession.deleteMany({}),
     Pertemuan.deleteMany({}),
+    Schedule.deleteMany({}),
     MataKuliah.deleteMany({}),
     Kelas.deleteMany({}),
     User.deleteMany({})
   ];
-  if (ScheduleModel) operations.push(ScheduleModel.deleteMany({}));
 
   await Promise.allSettled(operations);
 }
 
 export async function purgeDummyData() {
-  const ScheduleModel = (() => {
-    try {
-      return mongoose.model('Schedule');
-    } catch (e) {
-      return null;
-    }
-  })();
-
   const dummyUsers = await User.find({
     $or: [
       { email: /@university\.ac\.id$/i },
@@ -53,7 +38,7 @@ export async function purgeDummyData() {
     LiveSession.deleteMany({ dosen_id: { $in: dummyUserIds } }),
     Pertemuan.deleteMany({ dosen_id: { $in: dummyUserIds } }),
     MataKuliah.deleteMany({ dosen_id: { $in: dummyUserIds } }),
-    ScheduleModel ? ScheduleModel.deleteMany({ dosen_id: { $in: dummyUserIds } }) : Promise.resolve()
+    Schedule.deleteMany({ dosen_id: { $in: dummyUserIds } })
   ]);
 
   await Promise.allSettled([
@@ -172,37 +157,6 @@ export async function createDummyData() {
     // Define semester start date (e.g., roughly 4 months ago to simulate a full semester)
     // Environment date is 2026-01-07, so let's say semester started August 2025 (as requested)
     const semesterStart = new Date('2025-08-04T08:00:00');
-
-    // Create Schedule Model reference (safe check)
-    let ScheduleModel;
-    try {
-      ScheduleModel = mongoose.model('Schedule');
-    } catch (e) {
-      const scheduleSchema = new mongoose.Schema({
-        kelas: { type: String, required: true },
-        mata_kuliah: { type: String, required: true },
-        mata_kuliah_id: { type: mongoose.Schema.Types.ObjectId, ref: 'MataKuliah', required: true },
-        dosen_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-        dosen_name: { type: String, required: true },
-        tanggal: { type: Date, required: true },
-        jam_mulai: { type: String, required: true },
-        jam_selesai: { type: String, required: true },
-        durasi: { type: Number, required: true },
-        pertemuan_ke: { type: Number, required: true, min: 1 },
-        topik: { type: String, default: '' },
-        ruangan: { type: String, default: '' },
-        status: { type: String, enum: ['scheduled', 'ongoing', 'completed', 'cancelled'], default: 'scheduled' },
-        seat_positions: [{
-          seat_id: { type: Number, required: true },
-          x: { type: Number, required: true },
-          y: { type: Number, required: true },
-          width: { type: Number, required: true },
-          height: { type: Number, required: true },
-          student_id: { type: String, required: true }
-        }]
-      }, { timestamps: true });
-      ScheduleModel = mongoose.model('Schedule', scheduleSchema);
-    }
 
     for (let subjectIndex = 0; subjectIndex < 8; subjectIndex++) {
       const mataKuliah = mataKuliahData[subjectIndex];
@@ -323,7 +277,8 @@ export async function createDummyData() {
           // If date is in past, status = completed. If future, scheduled.
           const isPast = meetingDate < new Date();
           
-          const schedule = new ScheduleModel({
+          const schedule = new Schedule({
+            kelas_id: kelas._id,
             kelas: kelasName,
             mata_kuliah: mataKuliah.nama,
             mata_kuliah_id: mataKuliah._id,

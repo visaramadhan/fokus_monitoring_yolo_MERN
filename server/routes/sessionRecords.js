@@ -1,9 +1,19 @@
 import express from 'express';
 import SessionRecord from '../models/SessionRecord.js';
+import LiveSession from '../models/LiveSession.js';
+import Schedule from '../models/Schedule.js';
 import { auth } from '../middleware/auth.js';
 import ExcelJS from 'exceljs';
+import mongoose from 'mongoose';
 
 const router = express.Router();
+
+function toObjectIdOrNull(value) {
+  const raw = typeof value === 'string' ? value : value?._id || value?.id;
+  if (!raw) return null;
+  if (!mongoose.Types.ObjectId.isValid(String(raw))) return null;
+  return new mongoose.Types.ObjectId(String(raw));
+}
 
 function addAoaWorksheet(workbook, name, rows) {
   const ws = workbook.addWorksheet(name);
@@ -88,6 +98,35 @@ function averageFocusPercentage(detectionData) {
   return values.reduce((a, b) => a + b, 0) / values.length;
 }
 
+async function enrichSessionRecordPayload(payload = {}) {
+  const next = { ...payload };
+  const liveSessionObjectId = toObjectIdOrNull(next.liveSessionId || next.live_session_id);
+  const liveSession =
+    liveSessionObjectId
+      ? await LiveSession.findById(liveSessionObjectId)
+      : next.sessionId
+        ? await LiveSession.findOne({ sessionId: String(next.sessionId) })
+        : null;
+
+  const jadwalObjectId = toObjectIdOrNull(next.jadwalId || next.jadwal_id) || liveSession?.jadwal_id || null;
+  const scheduleDoc = jadwalObjectId ? await Schedule.findById(jadwalObjectId) : null;
+
+  const kelasObjectId = toObjectIdOrNull(next.kelasId || next.kelas_id) || liveSession?.kelas_id || scheduleDoc?.kelas_id || null;
+  const mataKuliahObjectId = toObjectIdOrNull(next.mataKuliahId || next.mata_kuliah_id) || liveSession?.mata_kuliah_id || scheduleDoc?.mata_kuliah_id || null;
+  const dosenObjectId = toObjectIdOrNull(next.dosenId || next.dosen_id) || liveSession?.dosen_id || scheduleDoc?.dosen_id || null;
+
+  return {
+    ...next,
+    live_session_id: liveSession?._id || liveSessionObjectId || null,
+    jadwal_id: scheduleDoc?._id || jadwalObjectId || null,
+    kelas_id: kelasObjectId,
+    mata_kuliah_id: mataKuliahObjectId,
+    dosen_id: dosenObjectId,
+    kelas: String(next.className || next.kelas || liveSession?.kelas || scheduleDoc?.kelas || '').trim(),
+    mata_kuliah: String(next.subjectName || next.mata_kuliah || liveSession?.mata_kuliah || scheduleDoc?.mata_kuliah || '').trim()
+  };
+}
+
 function analyzeLabels(detectionData) {
   const totals = new Map();
   let totalDetections = 0;
@@ -148,15 +187,13 @@ function analyzeLabels(detectionData) {
 // Create new session record
 router.post('/', auth, async (req, res) => {
   try {
+    const enriched = await enrichSessionRecordPayload(req.body || {});
     const {
       sessionId,
       sessionName,
-      className,
-      subjectName,
       seatData,
       detectionData,
       summary,
-      dosenId,
       tanggal,
       jamMulai,
       jamSelesai,
@@ -184,10 +221,14 @@ router.post('/', auth, async (req, res) => {
 
     const payload = {
       sessionId,
+      live_session_id: enriched.live_session_id,
+      jadwal_id: enriched.jadwal_id,
+      kelas_id: enriched.kelas_id,
       sessionName,
-      kelas: className,
-      mata_kuliah: subjectName,
-      dosen_id: dosenId || req.user._id,
+      kelas: enriched.kelas,
+      mata_kuliah: enriched.mata_kuliah,
+      mata_kuliah_id: enriched.mata_kuliah_id,
+      dosen_id: enriched.dosen_id || req.user._id,
       tanggal: baseDate,
       jam_mulai: jamMulaiDate,
       jam_selesai: jamSelesaiDate,
@@ -237,6 +278,10 @@ router.post('/', auth, async (req, res) => {
 router.get('/', auth, async (req, res) => {
   try {
     const records = await SessionRecord.find()
+      .populate('jadwal_id', 'tanggal jam_mulai jam_selesai pertemuan_ke status')
+      .populate('live_session_id', 'sessionId startTime endTime isActive')
+      .populate('kelas_id', 'nama_kelas tahun_ajaran semester')
+      .populate('mata_kuliah_id', 'nama kode sks')
       .populate('dosen_id', 'nama_lengkap')
       .sort({ tanggal: -1 });
     res.json(records);
@@ -249,6 +294,10 @@ router.get('/', auth, async (req, res) => {
 router.get('/:id', auth, async (req, res) => {
   try {
     const record = await SessionRecord.findById(req.params.id)
+      .populate('jadwal_id', 'tanggal jam_mulai jam_selesai pertemuan_ke status')
+      .populate('live_session_id', 'sessionId startTime endTime isActive')
+      .populate('kelas_id', 'nama_kelas tahun_ajaran semester')
+      .populate('mata_kuliah_id', 'nama kode sks')
       .populate('dosen_id', 'nama_lengkap departemen');
     
     if (!record) {

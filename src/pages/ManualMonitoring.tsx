@@ -296,6 +296,12 @@ export default function ManualMonitoring() {
           : undefined;
 
       const mataKuliahId = scheduleSubjectId || selectedSubject?._id;
+      const scheduleKelasId =
+        selectedSchedule
+          ? (typeof (selectedSchedule as any).kelas_id === 'string'
+              ? ((selectedSchedule as any).kelas_id as string)
+              : ((selectedSchedule as any).kelas_id?._id as string | undefined))
+          : undefined;
       const mataKuliahName = selectedSchedule?.mata_kuliah || selectedSubject?.nama || config.subject;
       const kelasName = selectedSchedule?.kelas || config.className;
 
@@ -309,6 +315,8 @@ export default function ManualMonitoring() {
       }
 
       const payload = {
+        jadwal_id: selectedScheduleId || undefined,
+        kelas_id: scheduleKelasId || undefined,
         tanggal: selectedSchedule?.tanggal ? new Date(selectedSchedule.tanggal) : new Date(),
         pertemuan_ke: selectedSchedule?.pertemuan_ke || sessionNumber,
         kelas: kelasName,

@@ -93,6 +93,21 @@ const sessionRecordSchema = new mongoose.Schema({
     required: true,
     unique: true
   },
+  live_session_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'LiveSession',
+    default: null
+  },
+  jadwal_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Schedule',
+    default: null
+  },
+  kelas_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Kelas',
+    default: null
+  },
   sessionName: {
     type: String,
     required: true
@@ -104,6 +119,11 @@ const sessionRecordSchema = new mongoose.Schema({
   mata_kuliah: {
     type: String,
     required: true
+  },
+  mata_kuliah_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'MataKuliah',
+    default: null
   },
   dosen_id: {
     type: mongoose.Schema.Types.ObjectId,
@@ -142,6 +162,9 @@ const sessionRecordSchema = new mongoose.Schema({
 }, {
   timestamps: true
 });
+
+sessionRecordSchema.index({ jadwal_id: 1, tanggal: -1 });
+sessionRecordSchema.index({ live_session_id: 1 }, { sparse: true });
 
 // Pre-save middleware to calculate summary statistics
 sessionRecordSchema.pre('save', function(next) {

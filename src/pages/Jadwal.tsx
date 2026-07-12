@@ -7,10 +7,11 @@ import { useStatusModal } from '../contexts/StatusModalContext';
 
 interface Schedule {
   _id: string;
+  kelas_id?: string | { _id: string } | null;
   kelas: string;
   mata_kuliah: string;
-  mata_kuliah_id: string;
-  dosen_id: string;
+  mata_kuliah_id: string | { _id: string };
+  dosen_id: string | { _id: string };
   dosen_name: string;
   tanggal: string;
   jam_mulai: string;
@@ -43,6 +44,8 @@ export default function Jadwal() {
   const [searchTerm, setSearchTerm] = useState('');
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [editingSchedule, setEditingSchedule] = useState<Schedule | null>(null);
+
+  const toId = (value: any) => (typeof value === 'string' ? value : value?._id || '');
 
   useEffect(() => {
     fetchSchedules();
@@ -91,7 +94,7 @@ export default function Jadwal() {
     
     // Filter by user role
     if (user?.role === 'dosen') {
-      return matchesSearch && schedule.dosen_id === user.id;
+      return matchesSearch && toId(schedule.dosen_id) === user.id;
     }
     
     return matchesSearch;

@@ -47,6 +47,21 @@ const pertemuanSchema = new mongoose.Schema({
     unique: true,
     sparse: true
   },
+  jadwal_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Schedule',
+    default: null
+  },
+  live_session_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'LiveSession',
+    default: null
+  },
+  kelas_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Kelas',
+    default: null
+  },
   tanggal: {
     type: Date,
     required: true
@@ -137,6 +152,9 @@ const pertemuanSchema = new mongoose.Schema({
 }, {
   timestamps: true
 });
+
+pertemuanSchema.index({ jadwal_id: 1, tanggal: -1 });
+pertemuanSchema.index({ live_session_id: 1 }, { sparse: true });
 
 pertemuanSchema.pre('save', function(next) {
   if (this.data_fokus.length > 0) {
