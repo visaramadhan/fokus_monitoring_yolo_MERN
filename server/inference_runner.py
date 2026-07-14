@@ -80,10 +80,20 @@ def _split_set(value: str) -> set:
 
 ROBOFLOW_API_KEY = _env("ROBOFLOW_API_KEY", "")
 MODEL_ID = _env("ROBOFLOW_MODEL_ID", "")
-ROBOFLOW_WORKFLOW_URL = _env(
-    "ROBOFLOW_WORKFLOW_URL",
-    "https://serverless.roboflow.com/infer/workflows/visa-ramadhan/detect-and-classify",
-)
+ROBOFLOW_API_URL = _env("ROBOFLOW_API_URL", "https://serverless.roboflow.com").rstrip("/")
+ROBOFLOW_WORKSPACE_NAME = _env("ROBOFLOW_WORKSPACE_NAME", "visa-ramadhan").strip()
+ROBOFLOW_WORKFLOW_ID = _env("ROBOFLOW_WORKFLOW_ID", "fokusdetection-vfocus-rdwkd-logic").strip()
+ROBOFLOW_IMAGE_INPUT = _env("ROBOFLOW_IMAGE_INPUT", "image").strip() or "image"
+ROBOFLOW_WORKFLOW_URL = _env("ROBOFLOW_WORKFLOW_URL", "").strip()
+if not ROBOFLOW_WORKFLOW_URL and ROBOFLOW_WORKSPACE_NAME and ROBOFLOW_WORKFLOW_ID:
+    ROBOFLOW_WORKFLOW_URL = f"{ROBOFLOW_API_URL}/infer/workflows/{ROBOFLOW_WORKSPACE_NAME}/{ROBOFLOW_WORKFLOW_ID}"
+ROBOFLOW_REQUESTED_PLAN = _env("ROBOFLOW_REQUESTED_PLAN", "webrtc-gpu-medium").strip() or "webrtc-gpu-medium"
+ROBOFLOW_REQUESTED_REGION = _env("ROBOFLOW_REQUESTED_REGION", "us").strip() or "us"
+ROBOFLOW_PROCESSING_TIMEOUT_SEC = int(_env("ROBOFLOW_PROCESSING_TIMEOUT_SEC", "3600") or "3600")
+ROBOFLOW_STREAM_OUTPUT = [item.strip() for item in _env("ROBOFLOW_STREAM_OUTPUT", "output_image").split(",") if item.strip()]
+ROBOFLOW_DATA_OUTPUT = [
+    item.strip() for item in _env("ROBOFLOW_DATA_OUTPUT", "focus_monitoring_json,frame_time,people").split(",") if item.strip()
+]
 EXPRESS_URL = _env("EXPRESS_URL", "http://127.0.0.1:5002")
 
 FOCUS_CLASSES = _split_set(_env("FOCUS_CLASSES", "memperhatikan,focused"))
@@ -124,13 +134,13 @@ def _call_roboflow_workflow(image_b64: str) -> dict:
         raise RuntimeError("ROBOFLOW_API_KEY is not set")
     url = (ROBOFLOW_WORKFLOW_URL or "").strip()
     if not url:
-        raise RuntimeError("ROBOFLOW_WORKFLOW_URL is not set")
+        raise RuntimeError("ROBOFLOW workflow URL is not set")
 
     res = requests.post(
         url,
         json={
             "api_key": ROBOFLOW_API_KEY,
-            "inputs": {"image": {"type": "base64", "value": image_b64}},
+            "inputs": {ROBOFLOW_IMAGE_INPUT: {"type": "base64", "value": image_b64}},
         },
         timeout=20,
     )
@@ -622,13 +632,34 @@ def http_status():
                 "last_workflow_call_ms": last_workflow_call_ms,
                 "last_workflow_status_code": last_workflow_status_code,
                 "last_workflow_error": last_workflow_error,
+                "roboflow": {
+                    "api_url": ROBOFLOW_API_URL,
+                    "workspace": ROBOFLOW_WORKSPACE_NAME,
+                    "workflow": ROBOFLOW_WORKFLOW_ID,
+                    "workflow_url": ROBOFLOW_WORKFLOW_URL,
+                    "image_input": ROBOFLOW_IMAGE_INPUT,
+                    "requested_plan": ROBOFLOW_REQUESTED_PLAN,
+                    "requested_region": ROBOFLOW_REQUESTED_REGION,
+                    "processing_timeout_sec": ROBOFLOW_PROCESSING_TIMEOUT_SEC,
+                    "stream_output": ROBOFLOW_STREAM_OUTPUT,
+                    "data_output": ROBOFLOW_DATA_OUTPUT,
+                },
             }
         )
 
 
 @app.route("/health", methods=["GET"])
 def http_health():
-    return jsonify({"status": "OK"})
+    return jsonify(
+        {
+            "status": "OK",
+            "provider": "roboflow-workflow",
+            "api_url": ROBOFLOW_API_URL,
+            "workspace": ROBOFLOW_WORKSPACE_NAME,
+            "workflow": ROBOFLOW_WORKFLOW_ID,
+            "image_input": ROBOFLOW_IMAGE_INPUT,
+        }
+    )
 
 
 @app.route("/api/model-info", methods=["GET"])

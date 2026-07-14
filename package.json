@@ -12,6 +12,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@roboflow/inference-sdk": "^0.4.0",
     "axios": "^1.6.2",
     "bcryptjs": "^3.0.2",
     "check-disk-space": "^3.4.0",

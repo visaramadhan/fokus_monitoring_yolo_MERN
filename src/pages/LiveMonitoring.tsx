@@ -26,6 +26,7 @@ import {
 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 import axios from 'axios';
+import { webrtc, type Connector, type WebRTCOutputData } from '@roboflow/inference-sdk';
 import { useAuth } from '../contexts/AuthContext';
 import { useStatusModal } from '../contexts/StatusModalContext';
 
@@ -145,6 +146,18 @@ interface DetectionRecord {
   summary: string;
 }
 
+interface RoboflowWebRtcStatus {
+  workspace_name: string;
+  workflow_id: string;
+  image_input: string;
+  stream_output: string[];
+  data_output: string[];
+  requested_plan?: string;
+  requested_region?: string;
+  processing_timeout_sec?: number;
+  workflow_parameters?: Record<string, unknown>;
+}
+
 export default function LiveMonitoring() {
   const { user } = useAuth();
   const { showSuccess, showError } = useStatusModal();
@@ -189,7 +202,7 @@ export default function LiveMonitoring() {
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [models, setModels] = useState<ModelFile[]>([]);
   
-  // Flask Status
+  // Hosted inference status
   const [flaskStatus, setFlaskStatus] = useState<'disconnected' | 'connected' | 'error'>('disconnected');
   const [modelStatus, setModelStatus] = useState<'inactive' | 'loading' | 'active' | 'error'>('inactive');
   const [flaskError, setFlaskError] = useState<string>('');
@@ -202,13 +215,14 @@ export default function LiveMonitoring() {
   const [recordIntervalSec, setRecordIntervalSec] = useState(3);
   const [lastInferenceMs, setLastInferenceMs] = useState<number | null>(null);
   const [isTestingDetection, setIsTestingDetection] = useState(false);
-  const [useInferencePipeline, setUseInferencePipeline] = useState(false);
+  const [useInferencePipeline, setUseInferencePipeline] = useState(true);
   const [pipelineCameraIndex, setPipelineCameraIndex] = useState(0);
   const [pipelineMaxFps, setPipelineMaxFps] = useState(10);
   const [pipelineRecordIntervalSec, setPipelineRecordIntervalSec] = useState(5);
   const [pipelineStatus, setPipelineStatus] = useState<'disconnected' | 'connected' | 'error'>('disconnected');
   const [pipelineError, setPipelineError] = useState<string>('');
   const [pipelineRunnerState, setPipelineRunnerState] = useState<string>('');
+  const [webRtcStatusConfig, setWebRtcStatusConfig] = useState<RoboflowWebRtcStatus | null>(null);
 
   const selectedSubject = subjects.find((s) => s._id === selectedSubjectId) || null;
   
@@ -225,7 +239,8 @@ export default function LiveMonitoring() {
   const lastCaptureDimsRef = useRef<{ width: number; height: number } | null>(null);
   const detectionMemoryRef = useRef<Map<string, { det: YoloDetection; lastSeen: number }>>(new Map());
   const requestDrawRef = useRef<number | null>(null);
-  const pipelinePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const sessionStartTimeRef = useRef(0);
+  const webrtcConnectionRef = useRef<any | null>(null);
 
   const todayStr = () => {
     const d = new Date();
@@ -252,6 +267,17 @@ export default function LiveMonitoring() {
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
+  const attachStreamToVideo = async (stream: MediaStream | null) => {
+    if (!videoRef.current) return;
+    videoRef.current.srcObject = stream;
+    if (stream) {
+      await videoRef.current.play().catch(() => {});
+      requestAnimationFrame(() => {
+        syncCanvasSize();
+      });
+    }
+  };
+
   useEffect(() => {
     isMonitoringRef.current = isMonitoring;
   }, [isMonitoring]);
@@ -270,35 +296,522 @@ export default function LiveMonitoring() {
       if (detectionIntervalRef.current) {
         clearTimeout(detectionIntervalRef.current);
       }
-      if (pipelinePollRef.current) {
-        clearInterval(pipelinePollRef.current);
-        pipelinePollRef.current = null;
-      }
+      void stopWebRtcPipeline();
     };
   }, [useInferencePipeline]);
 
   const checkPipelineStatus = async (): Promise<{ ok: boolean; message?: string }> => {
     try {
-      const res = await axios.get('/api/live-monitoring/pipeline/health', { timeout: 5000 });
+      const res = await axios.get('/api/roboflow/webrtc/status', { timeout: 5000 });
       if (res.data?.ok) {
         setPipelineStatus('connected');
-        const statusRes = await axios.get('/api/live-monitoring/pipeline/status', { timeout: 5000 });
-        const state = String(statusRes.data?.pipeline_state || '');
-        const errMsg = String(statusRes.data?.pipeline_error || '');
-        setPipelineRunnerState(state);
-        setPipelineError(state === 'error' ? (errMsg || 'Pipeline error') : '');
+        setPipelineRunnerState('ready');
+        setPipelineError('');
+        setWebRtcStatusConfig({
+          workspace_name: String(res.data.workspace_name || ''),
+          workflow_id: String(res.data.workflow_id || ''),
+          image_input: String(res.data.image_input || 'image'),
+          stream_output: Array.isArray(res.data.stream_output) ? res.data.stream_output : [],
+          data_output: Array.isArray(res.data.data_output) ? res.data.data_output : [],
+          requested_plan: res.data.requested_plan,
+          requested_region: res.data.requested_region,
+          processing_timeout_sec: Number(res.data.processing_timeout_sec || 0) || undefined,
+          workflow_parameters:
+            res.data.workflow_parameters && typeof res.data.workflow_parameters === 'object'
+              ? res.data.workflow_parameters
+              : undefined,
+        });
         return { ok: true };
       }
       setPipelineStatus('error');
-      const message = res.data?.message || 'Inference runner not reachable';
+      setWebRtcStatusConfig(null);
+      const message = res.data?.message || 'Roboflow WebRTC tidak bisa diakses';
       setPipelineError(message);
       return { ok: false, message };
     } catch (error: any) {
-      const msg = error?.response?.data?.message || error?.message || 'Inference runner not reachable';
+      const msg = error?.response?.data?.message || error?.message || 'Roboflow WebRTC tidak bisa diakses';
       setPipelineStatus('error');
+      setWebRtcStatusConfig(null);
       setPipelineError(msg);
       return { ok: false, message: msg };
     }
+  };
+
+  const getWebRtcParams = () => {
+    const cfg = webRtcStatusConfig;
+    return {
+      workspaceName: cfg?.workspace_name || 'visa-ramadhan',
+      workflowId: cfg?.workflow_id || 'fokusdetection-vfocus-rdwkd-logic',
+      imageInputName: cfg?.image_input || 'image',
+      streamOutputNames: Array.isArray(cfg?.stream_output) && cfg.stream_output.length > 0 ? cfg.stream_output : ['output_image'],
+      dataOutputNames: Array.isArray(cfg?.data_output) && cfg.data_output.length > 0 ? cfg.data_output : [],
+      workflowsParameters:
+        cfg?.workflow_parameters && typeof cfg.workflow_parameters === 'object'
+          ? cfg.workflow_parameters
+          : undefined,
+      processingTimeout: cfg?.processing_timeout_sec || 3600,
+      requestedPlan: cfg?.requested_plan || 'webrtc-gpu-medium',
+      requestedRegion: cfg?.requested_region || 'us',
+      realtimeProcessing: true,
+    };
+  };
+
+  const normalizeDetections = (rawDetections: YoloDetection[], nowMs: number) => {
+    const normalizeLabel = (value: unknown) => String(value ?? '').trim().toLowerCase();
+    const memory = detectionMemoryRef.current;
+    const keyForDet = (d: YoloDetection) => {
+      const q = (n: number, step: number) => Math.round(n / step) * step;
+      const b = d.bbox;
+      const x = q(b.x1, 24);
+      const y = q(b.y1, 24);
+      const w = q(b.x2 - b.x1, 24);
+      const h = q(b.y2 - b.y1, 24);
+      return `${normalizeLabel(d.class_name)}:${x}:${y}:${w}:${h}`;
+    };
+
+    for (const det of rawDetections) {
+      memory.set(keyForDet(det), { det, lastSeen: nowMs });
+    }
+
+    for (const [key, value] of memory.entries()) {
+      if (nowMs - value.lastSeen > 500) {
+        memory.delete(key);
+      }
+    }
+
+    return Array.from(memory.values()).map((value) => value.det);
+  };
+
+  const extractDetectionsFromWebRtc = (payload: WebRTCOutputData): YoloDetection[] => {
+    const serialized = payload?.serialized_output_data;
+    const queue: any[] = [serialized];
+    const predictions: any[] = [];
+
+    while (queue.length > 0) {
+      const current = queue.shift();
+      if (!current) continue;
+
+      if (Array.isArray(current)) {
+        const predictionLike = current.every((item) => item && typeof item === 'object');
+        if (predictionLike) {
+          predictions.push(...current);
+        }
+        continue;
+      }
+
+      if (typeof current !== 'object') continue;
+
+      if (Array.isArray((current as any).predictions)) {
+        predictions.push(...(current as any).predictions);
+      }
+      if (Array.isArray((current as any).detection_predictions)) {
+        predictions.push(...(current as any).detection_predictions);
+      }
+
+      for (const value of Object.values(current)) {
+        if (value && typeof value === 'object') {
+          queue.push(value);
+        }
+      }
+    }
+
+    return predictions
+      .map((item: any) => {
+        const className = String(item?.class ?? item?.class_name ?? item?.name ?? item?.label ?? '').trim();
+        if (!className) return null;
+
+        const x = Number(item?.x ?? item?.bbox?.x ?? 0);
+        const y = Number(item?.y ?? item?.bbox?.y ?? 0);
+        const width = Number(item?.width ?? item?.w ?? item?.bbox?.width ?? 0);
+        const height = Number(item?.height ?? item?.h ?? item?.bbox?.height ?? 0);
+        const x1Raw = Number(item?.bbox?.x1 ?? item?.x1);
+        const y1Raw = Number(item?.bbox?.y1 ?? item?.y1);
+        const x2Raw = Number(item?.bbox?.x2 ?? item?.x2);
+        const y2Raw = Number(item?.bbox?.y2 ?? item?.y2);
+
+        const x1 = Number.isFinite(x1Raw) ? x1Raw : x - width / 2;
+        const y1 = Number.isFinite(y1Raw) ? y1Raw : y - height / 2;
+        const x2 = Number.isFinite(x2Raw) ? x2Raw : x + width / 2;
+        const y2 = Number.isFinite(y2Raw) ? y2Raw : y + height / 2;
+
+        return {
+          class_name: className,
+          confidence: Number(item?.confidence ?? 0) || 0,
+          bbox: { x1, y1, x2, y2 }
+        } as YoloDetection;
+      })
+      .filter(Boolean) as YoloDetection[];
+  };
+
+  const applyDetectionResults = async (rawDetections: YoloDetection[], sessionId: string, startTimeMs: number) => {
+    const normalizeLabel = (value: unknown) => String(value ?? '').trim().toLowerCase();
+    const nowMs = Date.now();
+    const smoothedDetections = normalizeDetections(rawDetections, nowMs);
+    setYoloDetections(smoothedDetections);
+
+    const overlayCanvas = canvasRef.current;
+    const scaleX = overlayCanvas && videoRef.current?.videoWidth ? overlayCanvas.width / videoRef.current.videoWidth : 1;
+    const scaleY = overlayCanvas && videoRef.current?.videoHeight ? overlayCanvas.height / videoRef.current.videoHeight : 1;
+
+    const scaledDetections = smoothedDetections.map(d => ({
+      ...d,
+      bbox: {
+        x1: d.bbox.x1 * scaleX,
+        y1: d.bbox.y1 * scaleY,
+        x2: d.bbox.x2 * scaleX,
+        y2: d.bbox.y2 * scaleY
+      }
+    }));
+
+    const modelLabelSet = new Set(Object.values(modelInfo?.names ?? {}).map(normalizeLabel));
+    const behaviorLabels = [
+      'memperhatikan',
+      'focused',
+      'nguap',
+      'yawning',
+      'balikbadan',
+      'looking_away',
+      'chatting',
+      'sleeping',
+      'using_phone',
+      'writing'
+    ];
+    const hasBehaviorLabels = behaviorLabels.some(label => modelLabelSet.has(label));
+    const usePersonOnly = !hasBehaviorLabels && modelLabelSet.has('person');
+    const candidateDetections = usePersonOnly
+      ? scaledDetections.filter(d => normalizeLabel(d.class_name) === 'person')
+      : scaledDetections;
+
+    const focusedLabels = new Set(
+      ['memperhatikan', 'focused'].some(label => modelLabelSet.has(label))
+        ? ['memperhatikan', 'focused']
+        : modelLabelSet.has('person')
+          ? ['person']
+          : ['memperhatikan', 'focused']
+    );
+    const yawningLabels = new Set(['nguap', 'yawning']);
+    const lookingAwayLabels = new Set(['balikbadan', 'looking_away', 'chatting']);
+
+    let seatSnapshot: SeatPosition[] = [];
+    setSeatPositions(prev => {
+      const iou = (a: { x1: number; y1: number; x2: number; y2: number }, b: { x1: number; y1: number; x2: number; y2: number }) => {
+        const xA = Math.max(a.x1, b.x1);
+        const yA = Math.max(a.y1, b.y1);
+        const xB = Math.min(a.x2, b.x2);
+        const yB = Math.min(a.y2, b.y2);
+        const interW = Math.max(0, xB - xA);
+        const interH = Math.max(0, yB - yA);
+        const inter = interW * interH;
+        const areaA = Math.max(0, a.x2 - a.x1) * Math.max(0, a.y2 - a.y1);
+        const areaB = Math.max(0, b.x2 - b.x1) * Math.max(0, b.y2 - b.y1);
+        const denom = areaA + areaB - inter;
+        return denom > 0 ? inter / denom : 0;
+      };
+
+      const closeFocusWindow = (seat: SeatPosition) => {
+        if (seat.focus_start_time) {
+          return {
+            ...seat,
+            total_focus_duration: seat.total_focus_duration + Math.max(0, nowMs - seat.focus_start_time),
+            focus_start_time: null
+          };
+        }
+        return seat;
+      };
+
+      const nextSeats = prev.map(seat => {
+        const seatBox = { x1: seat.x, y1: seat.y, x2: seat.x + seat.width, y2: seat.y + seat.height };
+        let best: YoloDetection | null = null;
+        let bestScore = 0;
+
+        for (const det of candidateDetections) {
+          const score = iou(seatBox, det.bbox);
+          if (score > bestScore) {
+            bestScore = score;
+            best = det;
+          }
+        }
+
+        if (!best || bestScore < 0.05) {
+          const seatClosed = closeFocusWindow(seat);
+          return {
+            ...seatClosed,
+            face_detected: false,
+            is_occupied: false,
+            gesture_type: 'unknown',
+            confidence: 0,
+            departure_time: seat.attendance_time ? seatClosed.departure_time || new Date().toISOString() : seatClosed.departure_time
+          };
+        }
+
+        const className = String(best.class_name || '').toLowerCase();
+        const isFocused = focusedLabels.has(normalizeLabel(className));
+        const attendance_time = seat.attendance_time || new Date().toISOString();
+
+        let updated: SeatPosition = {
+          ...seat,
+          face_detected: true,
+          is_occupied: true,
+          gesture_type: best.class_name,
+          confidence: best.confidence,
+          attendance_time,
+          departure_time: null
+        };
+
+        if (isFocused) {
+          if (!updated.focus_start_time) updated.focus_start_time = nowMs;
+        } else {
+          updated = closeFocusWindow(updated);
+        }
+
+        return updated;
+      });
+
+      seatSnapshot = nextSeats;
+      return nextSeats;
+    });
+
+    setModelStatus('active');
+    setFlaskError('');
+    setLastInferenceMs(Math.max(0, Date.now() - startTimeMs));
+
+    const detectionTime = new Date().toLocaleTimeString();
+    const totalDetections = smoothedDetections.length;
+    const focusedCount = smoothedDetections.filter(d => focusedLabels.has(normalizeLabel(d.class_name))).length;
+    const yawningCount = smoothedDetections.filter(d => yawningLabels.has(normalizeLabel(d.class_name))).length;
+    const chattingCount = smoothedDetections.filter(d => lookingAwayLabels.has(normalizeLabel(d.class_name))).length;
+    const notFocusedCount = Math.max(0, totalDetections - focusedCount);
+    const focusPercentage = totalDetections > 0 ? Math.round((focusedCount / totalDetections) * 100) : 0;
+    const label_counts = smoothedDetections.reduce<Record<string, number>>((acc, det) => {
+      const key = normalizeLabel(det.class_name);
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {});
+
+    const now = Date.now();
+    const intervalMs = Math.max(1000, Math.round(recordIntervalSec * 1000));
+    const shouldRecord = now - lastRecordAtRef.current >= intervalMs;
+    if (!shouldRecord) {
+      requestDraw();
+      return;
+    }
+
+    lastRecordAtRef.current = now;
+    const seatsForRecord = seatSnapshot.length > 0 ? seatSnapshot : seatPositions;
+    const newDetectionData: DetectionData = {
+      timestamp: detectionTime,
+      totalDetections,
+      focusedCount,
+      notFocusedCount,
+      sleepingCount: 0,
+      phoneUsingCount: 0,
+      chattingCount,
+      yawningCount,
+      writingCount: 0,
+      focusPercentage,
+      label_counts,
+      seatData: seatsForRecord
+    };
+
+    setDetectionData(prev => [...prev.slice(-119), newDetectionData]);
+
+    const elapsedSeconds = startTimeMs ? Math.max(0, Math.floor((now - startTimeMs) / 1000)) : 0;
+    const summaryParts = [
+      `fokus ${focusedCount}`,
+      `tidak ${notFocusedCount}`,
+      yawningCount > 0 ? `nguap ${yawningCount}` : null,
+      chattingCount > 0 ? `balikbadan ${chattingCount}` : null
+    ].filter(Boolean);
+
+    const record: DetectionRecord = {
+      id: `${now}-${Math.random().toString(16).slice(2)}`,
+      timestamp: detectionTime,
+      elapsedTime: formatElapsed(elapsedSeconds),
+      totalDetections,
+      focusedCount,
+      notFocusedCount,
+      yawningCount,
+      chattingCount,
+      focusPercentage,
+      summary: summaryParts.join(' • ')
+    };
+
+    setDetectionRecords(prev => [record, ...prev].slice(0, 200));
+
+    if (now - lastBackendSaveAtRef.current >= intervalMs && currentSession?.sessionId === sessionId) {
+      lastBackendSaveAtRef.current = now;
+      const seat_data = seatsForRecord.map(seat => ({
+        seat_id: String(seat.seat_id),
+        student_id: seat.student_id || null,
+        is_focused: focusedLabels.has(normalizeLabel(seat.gesture_type)),
+        is_occupied: seat.is_occupied,
+        attendance_time: seat.attendance_time,
+        departure_time: seat.departure_time
+      }));
+
+      try {
+        await axios.post(`/api/live-monitoring/detection/${sessionId}`, {
+          totalDetections,
+          focusedCount,
+          notFocusedCount,
+          sleepingCount: 0,
+          phoneUsingCount: 0,
+          chattingCount,
+          yawningCount,
+          writingCount: 0,
+          focusPercentage,
+          record_interval_ms: intervalMs,
+          total_seats: seatsForRecord.length,
+          seat_data
+        });
+      } catch (error: any) {
+        const status = error?.response?.status;
+        const msg = error?.response?.data?.message || error?.message || 'Unknown error';
+        console.error('Failed to save detection data to backend:', status ? `[${status}] ${msg}` : msg);
+      }
+    }
+
+    requestDraw();
+  };
+
+  const buildPipelineResultFromSeats = () => {
+    const results = Object.fromEntries(
+      seatPositions.map(seat => {
+        const focused = ['memperhatikan', 'focused', 'person'].includes(String(seat.gesture_type || '').trim().toLowerCase());
+        return [
+          String(seat.seat_id),
+          {
+            fokus: focused ? 1 : 0,
+            tidak_fokus: focused ? 0 : 1,
+            focused
+          }
+        ];
+      })
+    );
+
+    const totalSeats = seatPositions.length;
+    const focusedCount = Object.values(results).filter((item: any) => item.focused).length;
+    const focusRate = totalSeats > 0 ? Math.round((focusedCount / totalSeats) * 100) : 0;
+
+    return {
+      seat_results: results,
+      summary: {
+        fokus: focusRate,
+        tidak_fokus: Math.max(0, 100 - focusRate),
+        fokus_count: focusedCount,
+        tidak_fokus_count: Math.max(0, totalSeats - focusedCount),
+        jumlah_hadir: totalSeats
+      }
+    };
+  };
+
+  const createWebRtcConnector = (): Connector => {
+    const token = localStorage.getItem('token');
+    const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
+
+    return {
+      connectWrtc: async (offer, wrtcParams) => {
+        const response = await fetch('/api/roboflow/webrtc/init', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...authHeaders,
+          },
+          body: JSON.stringify({ offer, wrtcParams }),
+        });
+
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          const blockMessage = Array.isArray(data?.blocks_errors)
+            ? data.blocks_errors
+                .map((item: any) => item?.property_details || item?.block_details || item?.block_id)
+                .filter(Boolean)
+                .join(' | ')
+            : '';
+          const message = [data?.message, data?.inner_error_message, blockMessage]
+            .filter(Boolean)
+            .join(' | ');
+          throw new Error(message || 'Gagal menginisialisasi Roboflow WebRTC.');
+        }
+        return data;
+      },
+      getIceServers: async () => {
+        const response = await fetch('/api/roboflow/webrtc/turn-config', {
+          headers: authHeaders,
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(data?.message || 'Gagal mengambil TURN config.');
+        }
+        return Array.isArray(data?.iceServers) ? data.iceServers : [];
+      }
+    };
+  };
+
+  const stopWebRtcPipeline = async () => {
+    const connection = webrtcConnectionRef.current;
+    webrtcConnectionRef.current = null;
+
+    if (connection) {
+      await connection.cleanup().catch(() => {});
+    }
+
+    if (cameraStream) {
+      await attachStreamToVideo(cameraStream);
+    }
+
+    setPipelineRunnerState('stopped');
+    setPipelineError('');
+    setPipelineStatus('connected');
+
+    return buildPipelineResultFromSeats();
+  };
+
+  const startWebRtcPipeline = async (sessionId: string) => {
+    if (!cameraStream) {
+      await startCamera();
+    }
+
+    const sourceStream = cameraStream || videoRef.current?.srcObject;
+    if (!(sourceStream instanceof MediaStream)) {
+      throw new Error('Kamera belum siap untuk Roboflow WebRTC.');
+    }
+
+    if (webrtcConnectionRef.current) {
+      await stopWebRtcPipeline();
+    }
+
+    const connector = createWebRtcConnector();
+    setPipelineRunnerState('connecting');
+    setPipelineError('');
+    setPipelineStatus('connected');
+    setModelStatus('loading');
+
+    const connection = await webrtc.useStream({
+      source: sourceStream,
+      connector,
+      wrtcParams: getWebRtcParams(),
+      onData: (payload) => {
+        if (payload?.errors?.length) {
+          const message = payload.errors.join(', ');
+          setPipelineStatus('error');
+          setPipelineRunnerState('error');
+          setPipelineError(message);
+          setModelStatus('error');
+          return;
+        }
+
+        const detections = extractDetectionsFromWebRtc(payload);
+        const startedAt = sessionStartTimeRef.current || Date.now();
+        void applyDetectionResults(detections, sessionId, startedAt);
+      }
+    });
+
+    webrtcConnectionRef.current = connection;
+    const remoteStream = await connection.remoteStream();
+    await attachStreamToVideo(remoteStream);
+    setPipelineRunnerState('running');
+    setModelStatus('active');
   };
 
   useEffect(() => {
@@ -428,13 +941,13 @@ export default function LiveMonitoring() {
       return;
     }
     try {
-      await axios.get('/flask/health', { timeout: 5000 });
+      await axios.get('/api/roboflow-model/status', { timeout: 5000 });
       setFlaskStatus('connected');
       setFlaskError('');
 
       setModelStatus('loading');
       try {
-        const infoResponse = await axios.get('/flask/api/model-info');
+        const infoResponse = await axios.get('/api/roboflow-model/model-info');
         if (infoResponse.data?.success) {
           setModelInfo({
             names: infoResponse.data.names || {},
@@ -444,18 +957,18 @@ export default function LiveMonitoring() {
           setFlaskError('');
         } else {
           setModelStatus('inactive');
-          setFlaskError(infoResponse.data?.message || 'Model info not available');
+          setFlaskError(infoResponse.data?.message || 'Model info Roboflow belum tersedia');
         }
       } catch (infoError: any) {
         setModelStatus('inactive');
-        const msg = infoError?.response?.data?.message || infoError?.message || 'Failed to get model info';
+        const msg = infoError?.response?.data?.message || infoError?.message || 'Gagal mengambil model info Roboflow';
         setFlaskError(msg);
-        console.error('Error getting model info:', infoError);
+        console.error('Error getting Roboflow model info:', infoError);
       }
     } catch (error) {
       setFlaskStatus('error');
-      setFlaskError('Flask server not responding. Please ensure Flask server is running on port 5001.');
-      console.error('Flask status check failed:', error);
+      setFlaskError('FastAPI/Roboflow proxy belum siap. Pastikan FastAPI berjalan dan backend dapat mengaksesnya.');
+      console.error('Roboflow status check failed:', error);
     }
   };
 
@@ -688,8 +1201,8 @@ export default function LiveMonitoring() {
     // Force redraw canvas to show the grid
     requestDraw();
     
-    // If we're in monitoring mode, start detection
-    if (isMonitoring && !isLabellingMode && currentSession?.sessionId) {
+    // Hosted polling mode still needs a local capture loop after grid changes.
+    if (isMonitoring && !isLabellingMode && currentSession?.sessionId && !useInferencePipeline) {
       startFlaskDetection(currentSession.sessionId);
     }
   };
@@ -905,10 +1418,8 @@ export default function LiveMonitoring() {
     }
 
     try {
-      if (!useInferencePipeline) {
-        if (!cameraStream) {
-          await startCamera();
-        }
+      if (!cameraStream) {
+        await startCamera();
       }
 
       const schedule = schedules.find(s => s._id === selectedSchedule);
@@ -941,69 +1452,59 @@ export default function LiveMonitoring() {
         ...(user?.role === 'admin' ? { dosen_id: selectedDosenId } : {})
       });
 
+      const startedAt = Date.now();
+      setCurrentSession(response.data);
+      setIsMonitoring(true);
+      isMonitoringRef.current = true;
+      setIsLabellingMode(false);
+      setDetectionData([]);
+      setDetectionRecords([]);
+      setAnnotatedImage('');
+      setYoloDetections([]);
+      detectionMemoryRef.current.clear();
+      sessionStartedAtRef.current = startedAt;
+      sessionStartTimeRef.current = startedAt;
+      lastRecordAtRef.current = 0;
+      lastBackendSaveAtRef.current = 0;
+
       if (useInferencePipeline) {
         try {
           const health = await checkPipelineStatus();
           if (!health.ok) {
-            showError('Gagal Memulai', health.message || 'Inference runner tidak bisa diakses.');
+            showError('Gagal Memulai', health.message || 'Roboflow WebRTC tidak bisa diakses.');
+            setIsMonitoring(false);
+            isMonitoringRef.current = false;
+            setCurrentSession(null);
+            sessionStartedAtRef.current = null;
+            sessionStartTimeRef.current = 0;
             return;
           }
-          const seats = seatPositions.map((s) => ({
-            id: String(s.seat_id),
-            x: s.x,
-            y: s.y,
-            w: s.width,
-            h: s.height
-          }));
-          await axios.post('/api/live-monitoring/pipeline/start', {
-            camera_index: pipelineCameraIndex,
-            seats,
-            session_id: response.data.sessionId,
-            confidence: detectionConf,
-            max_fps: pipelineMaxFps,
-            record_interval: pipelineRecordIntervalSec,
-            jpeg_quality: Math.round(detectionJpegQuality * 100)
-          });
-          startPipelinePolling(response.data.sessionId);
-          setCurrentSession(response.data);
-          setIsMonitoring(true);
-          isMonitoringRef.current = true;
-          setIsLabellingMode(false);
-          setDetectionData([]);
-          setDetectionRecords([]);
-          setAnnotatedImage('');
-          setYoloDetections([]);
-          detectionMemoryRef.current.clear();
-          sessionStartedAtRef.current = Date.now();
-          lastRecordAtRef.current = 0;
-          showSuccess('Berhasil', 'Live monitoring dimulai (Pipeline).');
+          await startWebRtcPipeline(response.data.sessionId);
+          showSuccess('Berhasil', 'Live monitoring dimulai dengan Roboflow WebRTC.');
         } catch (error: any) {
           const msg =
             error?.response?.data?.message ||
             error?.response?.data?.error ||
             error?.message ||
-            'Pipeline inference gagal dimulai.';
+            'Roboflow WebRTC gagal dimulai.';
           showError('Gagal Memulai', msg);
+          try {
+            await stopWebRtcPipeline();
+          } catch {}
           try {
             await axios.post(`/api/live-monitoring/stop/${response.data.sessionId}`);
           } catch {}
           try {
             await axios.put(`/api/jadwal/${selectedSchedule}`, { status: 'scheduled' });
           } catch {}
+          setIsMonitoring(false);
+          isMonitoringRef.current = false;
+          setCurrentSession(null);
+          sessionStartedAtRef.current = null;
+          sessionStartTimeRef.current = 0;
           await fetchSchedules().catch(() => {});
         }
       } else {
-        setCurrentSession(response.data);
-        setIsMonitoring(true);
-        isMonitoringRef.current = true;
-        setIsLabellingMode(false);
-        setDetectionData([]);
-        setDetectionRecords([]);
-        setAnnotatedImage('');
-        setYoloDetections([]);
-        detectionMemoryRef.current.clear();
-        sessionStartedAtRef.current = Date.now();
-        lastRecordAtRef.current = 0;
         showSuccess('Berhasil', 'Live monitoring dimulai.');
         startFlaskDetection(response.data.sessionId);
       }
@@ -1027,10 +1528,6 @@ export default function LiveMonitoring() {
       if (detectionIntervalRef.current) {
         clearTimeout(detectionIntervalRef.current);
       }
-      if (pipelinePollRef.current) {
-        clearInterval(pipelinePollRef.current);
-        pipelinePollRef.current = null;
-      }
 
       await axios.post(`/api/live-monitoring/stop/${currentSession.sessionId}`);
       
@@ -1038,10 +1535,9 @@ export default function LiveMonitoring() {
       let pipelineStopData: any = null;
       if (useInferencePipeline) {
         try {
-          const resp = await axios.post('/api/live-monitoring/pipeline/stop', { session_id: currentSession.sessionId });
-          pipelineStopData = resp.data;
+          pipelineStopData = await stopWebRtcPipeline();
         } catch (error) {
-          pipelineStopData = null;
+          pipelineStopData = buildPipelineResultFromSeats();
         }
       }
       const exported = await exportSessionData({
@@ -1055,6 +1551,7 @@ export default function LiveMonitoring() {
       setDetectionData([]);
       setDetectionRecords([]);
       sessionStartedAtRef.current = null;
+      sessionStartTimeRef.current = 0;
       lastRecordAtRef.current = 0;
       setModelStatus('inactive');
       setAnnotatedImage('');
@@ -1082,44 +1579,6 @@ export default function LiveMonitoring() {
     }
   };
 
-  const startPipelinePolling = (sessionId: string) => {
-    if (pipelinePollRef.current) {
-      clearInterval(pipelinePollRef.current);
-      pipelinePollRef.current = null;
-    }
-    pipelinePollRef.current = setInterval(async () => {
-      try {
-        const { data } = await axios.get(`/api/live-monitoring/frame/${sessionId}`);
-        const frame = typeof data?.frame === 'string' ? data.frame : '';
-        if (frame) {
-          setAnnotatedImage(frame.startsWith('data:image') ? frame : `data:image/jpeg;base64,${frame}`);
-        }
-        const preds = Array.isArray(data?.predictions) ? data.predictions : [];
-        const mapped: YoloDetection[] = preds
-          .map((p: any) => {
-            const cls = String(p?.class ?? p?.class_name ?? '').trim();
-            const confRaw = typeof p?.confidence === 'number' ? p.confidence : Number(p?.confidence ?? 0);
-            const conf = Number.isFinite(confRaw) ? confRaw : 0;
-
-            const x = Number(p?.x ?? 0);
-            const y = Number(p?.y ?? 0);
-            const w = Number(p?.width ?? p?.w ?? 0);
-            const h = Number(p?.height ?? p?.h ?? 0);
-
-            if (!cls) return null;
-            return {
-              class_name: cls,
-              confidence: conf,
-              bbox: { x1: x - w / 2, y1: y - h / 2, x2: x + w / 2, y2: y + h / 2 }
-            } as YoloDetection;
-          })
-          .filter(Boolean) as YoloDetection[];
-        setYoloDetections(mapped);
-      } catch (error) {
-      }
-    }, 100);
-  };
-
   const startFlaskDetection = (sessionId: string) => {
     if (!sessionId) {
       console.error('Session ID is required for detection');
@@ -1135,7 +1594,7 @@ export default function LiveMonitoring() {
     // Run detection once immediately when monitoring starts
     runDetection(sessionId);
     
-    const intervalMs = 250;
+    const intervalMs = 1000;
     const tick = async () => {
       if (!isMonitoringRef.current) return;
       await runDetection(sessionId);
@@ -1204,83 +1663,57 @@ export default function LiveMonitoring() {
       if (useInferencePipeline) {
         const health = await checkPipelineStatus();
         if (!health.ok) {
-          showError('Gagal', health.message || 'Inference runner tidak bisa diakses.');
+          showError('Gagal', health.message || 'Roboflow WebRTC tidak bisa diakses.');
           return;
         }
 
-        const testSessionId = `test_${Date.now()}`;
-        await axios.post('/api/live-monitoring/pipeline/start', {
-          camera_index: pipelineCameraIndex,
-          seats: [],
-          session_id: testSessionId,
-          confidence: detectionConf,
-          max_fps: Math.max(1, Math.min(10, pipelineMaxFps || 10)),
-          record_interval: Math.max(1, Math.min(60, pipelineRecordIntervalSec || 5)),
-          jpeg_quality: Math.round(detectionJpegQuality * 100)
-        });
-
-        let lastFrame = '';
-        let lastPreds: any[] = [];
-
-        for (let i = 0; i < 20; i++) {
-          await new Promise((r) => setTimeout(r, 500));
-          const { data } = await axios.get(`/api/live-monitoring/frame/${testSessionId}`);
-          const frame = typeof data?.frame === 'string' ? data.frame : '';
-          const preds = Array.isArray(data?.predictions) ? data.predictions : [];
-          if (frame) lastFrame = frame;
-          if (preds.length) lastPreds = preds;
-          if (frame || preds.length) break;
+        if (!cameraStream) {
+          await startCamera();
         }
-
-        try {
-          const st = await axios.get('/api/live-monitoring/pipeline/status', { timeout: 5000 });
-          const runnerState = String(st.data?.pipeline_state || '');
-          const runnerErr = String(st.data?.pipeline_error || '');
-          const wfErr = String(st.data?.last_workflow_error || '');
-          const wfCode = Number(st.data?.last_workflow_status_code || 0);
-          if (runnerState === 'error') {
-            showError('Gagal', runnerErr || wfErr || 'Pipeline error');
-            return;
-          }
-          if (wfErr) {
-            const msg = wfCode ? `${wfErr} (HTTP ${wfCode})` : wfErr;
-            showError('Gagal', msg);
-            return;
-          }
-        } catch {}
-
-        if (lastFrame) {
-          setAnnotatedImage(lastFrame.startsWith('data:image') ? lastFrame : `data:image/jpeg;base64,${lastFrame}`);
-        }
-
-        const mapped: YoloDetection[] = (lastPreds || [])
-          .map((p: any) => {
-            const cls = String(p?.class ?? p?.class_name ?? '').trim();
-            const confRaw = typeof p?.confidence === 'number' ? p.confidence : Number(p?.confidence ?? 0);
-            const conf = Number.isFinite(confRaw) ? confRaw : 0;
-            const x = Number(p?.x ?? 0);
-            const y = Number(p?.y ?? 0);
-            const w = Number(p?.width ?? p?.w ?? 0);
-            const h = Number(p?.height ?? p?.h ?? 0);
-            if (!cls) return null;
-            return {
-              class_name: cls,
-              confidence: conf,
-              bbox: { x1: x - w / 2, y1: y - h / 2, x2: x + w / 2, y2: y + h / 2 }
-            } as YoloDetection;
-          })
-          .filter(Boolean) as YoloDetection[];
-
-        setYoloDetections(mapped);
-        if (!lastFrame && mapped.length === 0) {
-          showError('Gagal', 'Tidak ada frame/prediksi dari runner. Cek /api/live-monitoring/pipeline/status untuk detail error.');
+        const sourceStream = cameraStream || videoRef.current?.srcObject;
+        if (!(sourceStream instanceof MediaStream)) {
+          showError('Gagal', 'Kamera belum siap untuk pengujian WebRTC.');
           return;
         }
-        showSuccess('Berhasil', `Detections: ${mapped.length}`);
+
+        let testConnection: any = null;
+        let payloadReceived = false;
+        let detectedCount = 0;
+        const testStartedAt = Date.now();
 
         try {
-          await axios.post('/api/live-monitoring/pipeline/stop', { session_id: testSessionId });
-        } catch {}
+          testConnection = await webrtc.useStream({
+            source: sourceStream,
+            connector: createWebRtcConnector(),
+            wrtcParams: getWebRtcParams(),
+            onData: (payload) => {
+              if (payload?.errors?.length) return;
+              payloadReceived = true;
+              const detections = extractDetectionsFromWebRtc(payload);
+              detectedCount = detections.length;
+              setYoloDetections(detections);
+              setModelStatus('active');
+              setLastInferenceMs(Date.now() - testStartedAt);
+            }
+          });
+
+          for (let i = 0; i < 10; i++) {
+            await new Promise((resolve) => setTimeout(resolve, 500));
+            if (payloadReceived) break;
+          }
+        } finally {
+          await testConnection?.cleanup?.().catch(() => {});
+          if (cameraStream) {
+            await attachStreamToVideo(cameraStream);
+          }
+        }
+
+        if (!payloadReceived) {
+          showError('Gagal', 'Belum ada output dari Roboflow WebRTC. Cek workflow, TURN config, atau izin kamera.');
+          return;
+        }
+
+        showSuccess('Berhasil', `Detections: ${detectedCount}`);
         return;
       }
 
@@ -1294,7 +1727,7 @@ export default function LiveMonitoring() {
       }
 
       const startTime = Date.now();
-      const response = await axios.post('/flask/api/detect/frame', {
+      const response = await axios.post('/api/roboflow-model/detect-frame', {
         image_base64: frameData,
         conf: detectionConf,
         imgsz: detectionWidth,
@@ -1339,7 +1772,7 @@ export default function LiveMonitoring() {
         if (status === 404) {
           showError(
             'Gagal',
-            'Endpoint Flask tidak tersedia. Jika memakai Pipeline, aktifkan Pipeline (Roboflow). Jika memakai Flask, jalankan flask_server.'
+            'Endpoint FastAPI/Roboflow proxy tidak tersedia. Pastikan backend Express dan FastAPI berjalan.'
           );
         } else {
           showError('Gagal', errorMessage);
@@ -1369,7 +1802,7 @@ export default function LiveMonitoring() {
       if (!frameData) return;
 
       const startTime = Date.now();
-      const response = await axios.post('/flask/api/detect/frame', {
+      const response = await axios.post('/api/roboflow-model/detect-frame', {
         image_base64: frameData,
         conf: detectionConf,
         imgsz: detectionWidth,
@@ -1633,7 +2066,7 @@ export default function LiveMonitoring() {
 
     } catch (error: any) {
       const errorMessage = error.response?.data?.message || error.message || 'Unknown error';
-      console.error('Flask detection error:', errorMessage);
+      console.error('Roboflow detection error:', errorMessage);
       setFlaskError(errorMessage);
     }
     finally {
@@ -1964,134 +2397,61 @@ export default function LiveMonitoring() {
           
           <div className="space-y-4">
             <div className="p-3 bg-gray-50 rounded-lg">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium text-gray-700">Mode Inference</span>
-                <label className="flex items-center gap-2 text-sm text-gray-700">
-                  <input
-                    type="checkbox"
-                    checked={useInferencePipeline}
-                    onChange={(e) => {
-                      setUseInferencePipeline(e.target.checked);
-                      setAnnotatedImage('');
-                      setYoloDetections([]);
-                      if (pipelinePollRef.current) {
-                        clearInterval(pipelinePollRef.current);
-                        pipelinePollRef.current = null;
-                      }
-                    }}
-                    disabled={isMonitoring}
-                  />
-                  Pipeline (Roboflow)
-                </label>
-              </div>
-
-              {useInferencePipeline && (
-                <div className="grid grid-cols-3 gap-2 mt-3">
-                  <div>
-                    <div className="text-xs text-gray-600 mb-1">Camera Index</div>
-                    <input
-                      type="number"
-                      min={0}
-                      value={pipelineCameraIndex}
-                      onChange={(e) => setPipelineCameraIndex(Number(e.target.value) || 0)}
-                      disabled={isMonitoring}
-                      className="w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-                    />
-                  </div>
-                  <div>
-                    <div className="text-xs text-gray-600 mb-1">Max FPS</div>
-                    <input
-                      type="number"
-                      min={1}
-                      max={30}
-                      value={pipelineMaxFps}
-                      onChange={(e) => setPipelineMaxFps(Number(e.target.value) || 10)}
-                      disabled={isMonitoring}
-                      className="w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-                    />
-                  </div>
-                  <div>
-                    <div className="text-xs text-gray-600 mb-1">Record (sec)</div>
-                    <input
-                      type="number"
-                      min={1}
-                      max={60}
-                      value={pipelineRecordIntervalSec}
-                      onChange={(e) => setPipelineRecordIntervalSec(Number(e.target.value) || 5)}
-                      disabled={isMonitoring}
-                      className="w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-                    />
-                  </div>
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <span className="text-sm font-medium text-gray-700">Mode Inference</span>
+                  <p className="text-xs text-gray-600 mt-1">
+                    {useInferencePipeline
+                      ? 'Roboflow WebRTC. Browser mengirim stream webcam secara real-time ke worker Roboflow lewat koneksi WebRTC.'
+                      : 'Snapshot per detik. Browser capture frame webcam lalu kirim ke backend Node → FastAPI → Roboflow Model API.'}
+                  </p>
                 </div>
-              )}
+                <button
+                  type="button"
+                  onClick={() => setUseInferencePipeline((prev) => !prev)}
+                  disabled={isMonitoring}
+                  className={`text-xs font-medium px-2 py-1 rounded-full ${
+                    useInferencePipeline ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'
+                  } ${isMonitoring ? 'opacity-60 cursor-not-allowed' : 'hover:opacity-90'}`}
+                >
+                  {useInferencePipeline ? 'WebRTC' : 'FastAPI'}
+                </button>
+              </div>
             </div>
 
-            {useInferencePipeline ? (
-              <div className="p-3 bg-gray-50 rounded-lg">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-medium text-gray-700">Inference Runner</span>
-                  <div className="flex items-center gap-3">
-                    <button
-                      type="button"
-                      onClick={checkPipelineStatus}
-                      className="text-blue-600 hover:text-blue-700 font-medium disabled:opacity-60"
-                      disabled={isMonitoring}
-                    >
-                      Refresh
-                    </button>
-                    <div className={`flex items-center ${
-                      pipelineStatus === 'connected' ? 'text-green-600' :
-                      pipelineStatus === 'error' ? 'text-red-600' : 'text-gray-400'
-                    }`}>
-                      {pipelineStatus === 'connected' ? <CheckCircle className="h-4 w-4" /> :
-                       pipelineStatus === 'error' ? <XCircle className="h-4 w-4" /> :
-                       <AlertCircle className="h-4 w-4" />}
-                      <span className="ml-1 text-xs">{pipelineStatus}</span>
-                    </div>
-                  </div>
-                </div>
-                {pipelineError && (
-                  <p className="text-xs text-red-600 mt-2">{pipelineError}</p>
-                )}
-                {pipelineRunnerState && (
-                  <div className="text-xs text-gray-600 mt-2">
-                    Runner State: {pipelineRunnerState}
-                  </div>
-                )}
-                <div className="text-xs text-gray-600 mt-2">
-                  Pipeline mode tidak membutuhkan Flask YOLO lama.
+            <div className="p-3 bg-gray-50 rounded-lg">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-sm font-medium text-gray-700">
+                  {useInferencePipeline ? 'Roboflow WebRTC' : 'FastAPI Roboflow Model'}
+                </span>
+                <div className={`flex items-center ${
+                  (useInferencePipeline ? pipelineStatus : flaskStatus) === 'connected' ? 'text-green-600' : 
+                  (useInferencePipeline ? pipelineStatus : flaskStatus) === 'error' ? 'text-red-600' : 'text-gray-400'
+                }`}>
+                  {(useInferencePipeline ? pipelineStatus : flaskStatus) === 'connected' ? <CheckCircle className="h-4 w-4" /> :
+                   (useInferencePipeline ? pipelineStatus : flaskStatus) === 'error' ? <XCircle className="h-4 w-4" /> :
+                   <AlertCircle className="h-4 w-4" />}
+                  <span className="ml-1 text-xs">{useInferencePipeline ? pipelineStatus : flaskStatus}</span>
                 </div>
               </div>
-            ) : (
-              <div className="p-3 bg-gray-50 rounded-lg">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-medium text-gray-700">Flask Server</span>
-                  <div className={`flex items-center ${
-                    flaskStatus === 'connected' ? 'text-green-600' : 
-                    flaskStatus === 'error' ? 'text-red-600' : 'text-gray-400'
-                  }`}>
-                    {flaskStatus === 'connected' ? <CheckCircle className="h-4 w-4" /> :
-                     flaskStatus === 'error' ? <XCircle className="h-4 w-4" /> :
-                     <AlertCircle className="h-4 w-4" />}
-                    <span className="ml-1 text-xs">{flaskStatus}</span>
-                  </div>
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium text-gray-700">Model Status</span>
+                <div className={`flex items-center ${
+                  modelStatus === 'active' ? 'text-green-600' : 
+                  modelStatus === 'loading' ? 'text-yellow-600' :
+                  modelStatus === 'error' ? 'text-red-600' : 'text-gray-400'
+                }`}>
+                  {modelStatus === 'loading' && <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-current mr-1"></div>}
+                  <span className="text-xs">{modelStatus}</span>
                 </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium text-gray-700">Model Status</span>
-                  <div className={`flex items-center ${
-                    modelStatus === 'active' ? 'text-green-600' : 
-                    modelStatus === 'loading' ? 'text-yellow-600' :
-                    modelStatus === 'error' ? 'text-red-600' : 'text-gray-400'
-                  }`}>
-                    {modelStatus === 'loading' && <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-current mr-1"></div>}
-                    <span className="text-xs">{modelStatus}</span>
-                  </div>
-                </div>
-                {flaskError && (
-                  <p className="text-xs text-red-600 mt-2">{flaskError}</p>
-                )}
               </div>
-            )}
+              {useInferencePipeline && pipelineRunnerState && (
+                <p className="text-xs text-gray-600 mt-2">State: {pipelineRunnerState}</p>
+              )}
+              {(useInferencePipeline ? pipelineError : flaskError) && (
+                <p className="text-xs text-red-600 mt-2">{useInferencePipeline ? pipelineError : flaskError}</p>
+              )}
+            </div>
 
             {user?.role === 'admin' && (
               <div>
@@ -2238,7 +2598,7 @@ export default function LiveMonitoring() {
                 onChange={(e) => setSessionName(e.target.value)}
                 disabled={isMonitoring}
                 className="w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-                placeholder="Enter session name"
+                placeholder="Masukkan nama sesi"
               />
             </div>
 
@@ -2253,7 +2613,7 @@ export default function LiveMonitoring() {
                   <div className="flex items-center gap-3">
                     <button
                       type="button"
-                      onClick={checkFlaskStatus}
+                      onClick={useInferencePipeline ? checkPipelineStatus : checkFlaskStatus}
                       disabled={modelStatus === 'loading'}
                       className="text-blue-600 hover:text-blue-700 font-medium disabled:opacity-60"
                     >
@@ -2277,7 +2637,7 @@ export default function LiveMonitoring() {
                     </div>
                   </div>
                 ) : (
-                  <div className="text-gray-600">Belum ada data model-info.</div>
+                  <div className="text-gray-600">Belum ada data model-info Roboflow.</div>
                 )}
                 <div className="mt-3 space-y-2">
                   <div className="flex items-center justify-between">
@@ -2354,7 +2714,7 @@ export default function LiveMonitoring() {
                   disabled={isMonitoring}
                   className="flex-1 border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
                 >
-                  <option value="">Select Camera</option>
+                  <option value="">Pilih kamera</option>
                   {cameras.map((camera) => (
                     <option key={camera.deviceId} value={camera.deviceId}>
                       {camera.label}
@@ -2567,12 +2927,12 @@ export default function LiveMonitoring() {
               onMouseLeave={handleCanvasMouseUp}
             />
             
-            {!cameraStream && !(useInferencePipeline && annotatedImage) && (
+            {!cameraStream && (
               <div className="flex items-center justify-center h-full text-gray-400">
                 <div className="text-center">
                   <Camera className="h-12 w-12 mx-auto mb-2" />
-                  <p>{useInferencePipeline ? 'Pipeline feed belum ada frame' : 'Camera not active'}</p>
-                  <p className="text-sm">{useInferencePipeline ? 'Pastikan inference_runner berjalan & camera index benar' : 'Start camera to begin'}</p>
+                  <p>Kamera belum aktif</p>
+                  <p className="text-sm">Mulai kamera untuk menampilkan live stream dan mengirim frame ke Roboflow.</p>
                 </div>
               </div>
             )}
@@ -2591,12 +2951,12 @@ export default function LiveMonitoring() {
 
             {modelStatus === 'active' && isMonitoring && !useInferencePipeline && (
               <div className="absolute bottom-4 left-4 bg-green-500 text-white px-3 py-1 rounded-full text-sm font-medium">
-                MODEL ACTIVE
+                ROBOFLOW ACTIVE
               </div>
             )}
             {useInferencePipeline && isMonitoring && (
               <div className="absolute bottom-4 left-4 bg-green-500 text-white px-3 py-1 rounded-full text-sm font-medium">
-                PIPELINE ACTIVE
+                WEBRTC ACTIVE
               </div>
             )}
           </div>
@@ -2608,7 +2968,7 @@ export default function LiveMonitoring() {
                 <span className="text-sm text-gray-600">{yoloDetections.length} objects</span>
               </div>
               <div className="flex items-center justify-between text-sm text-gray-600 mb-3">
-                <span>Last inference</span>
+                <span>Inferensi terakhir</span>
                 <span>{lastInferenceMs !== null ? `${lastInferenceMs} ms` : '-'}</span>
               </div>
               {yoloDetections.length > 0 ? (
@@ -2660,24 +3020,27 @@ export default function LiveMonitoring() {
           {/* Instructions */}
           <div className="mt-4 p-4 bg-blue-50 rounded-lg">
             <h4 className="font-medium text-blue-900 mb-2">
-              {isLabellingMode ? 'Labelling Instructions:' : 'Monitoring Status:'}
+              {isLabellingMode ? 'Panduan Labelling:' : 'Status Monitoring:'}
             </h4>
             {isLabellingMode ? (
               <ul className="text-sm text-blue-700 space-y-1">
-                <li>• Click and drag to create seat bounding boxes</li>
-                <li>• Blue: Empty seats, Green: Focused, Orange: Not focused, Red: No face detected</li>
-                <li>• Seats defined: {seatPositions.length}/{totalSeats}</li>
+                <li>• Klik lalu drag untuk membuat bounding box kursi</li>
+                <li>• Biru: kursi kosong, Hijau: fokus, Oranye: tidak fokus, Merah: wajah tidak terdeteksi</li>
+                <li>• Kursi terdefinisi: {seatPositions.length}/{totalSeats}</li>
               </ul>
             ) : (
               <div className="text-sm text-blue-700 space-y-1">
-                <p>• AI detection runs on full frame (webcam)</p>
-                <p>• Frame size sent to backend: {detectionWidth}px width (JPEG {detectionJpegQuality.toFixed(2)})</p>
-                <p>• Requests throttled (no overlapping inference)</p>
-                <p>• Recording interval: {recordIntervalSec}s</p>
+                <p>• Deteksi AI berjalan pada full frame webcam</p>
+                {useInferencePipeline ? (
+                  <p>â€¢ Stream webcam diproses real-time oleh Roboflow WebRTC worker</p>
+                ) : (
+                  <p>â€¢ Frame yang dikirim ke backend: lebar {detectionWidth}px (JPEG {detectionJpegQuality.toFixed(2)})</p>
+                )}
+                <p>• Interval rekam data: {recordIntervalSec}s</p>
                 {modelInfo?.num_classes ? (
                   <p>• Classes: {Object.values(modelInfo.names).join(', ')}</p>
                 ) : (
-                  <p>• Classes: (load model-info to view)</p>
+                  <p>• Classes: (klik Refresh untuk memuat model-info)</p>
                 )}
               </div>
             )}

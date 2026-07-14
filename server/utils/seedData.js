@@ -49,7 +49,12 @@ export async function purgeDummyData() {
 
 export async function createDummyData() {
   try {
-    if (String(process.env.ENABLE_DUMMY_DATA).toLowerCase() !== 'true') {
+    const seedFlag = String(process.env.ENABLE_DUMMY_DATA || '').toLowerCase();
+    const shouldSeed =
+      seedFlag === 'true' ||
+      (seedFlag === '' && String(process.env.NODE_ENV || 'development').toLowerCase() !== 'production');
+
+    if (!shouldSeed) {
       console.log('Dummy data seeding is disabled (set ENABLE_DUMMY_DATA=true to enable)');
       return;
     }

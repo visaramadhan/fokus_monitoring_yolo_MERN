@@ -1,16 +1,17 @@
-# Fokus Monitoring YOLO (MERN + Roboflow/Flask)
+# Fokus Monitoring YOLO (MERN + Roboflow)
 
 Sistem monitoring fokus mahasiswa berbasis:
 - Frontend: React + Vite (TypeScript)
 - Backend API: Node.js + Express + MongoDB (Mongoose)
 - AI Service:
-  - Flask + Ultralytics YOLO (legacy/local)
-  - Roboflow Workflow / Python inference runner (opsional, untuk live pipeline)
+  - Roboflow Hosted Workflow (utama)
+  - Roboflow WebRTC (utama untuk webcam lokal real-time)
+  - Python inference runner (legacy / opsional)
 
 Port default saat development:
 - Frontend: http://localhost:5173
 - Backend API: http://localhost:5002
-- Flask (YOLO): http://localhost:5001
+- Python inference runner (opsional): http://localhost:5001
 
 ## Arsitektur Singkat
 
@@ -25,8 +26,10 @@ Port default saat development:
 
 3) Live Monitoring:
 - Video tetap berjalan di elemen `<video>`
-- Mode legacy: frame di-capture → dikirim ke Flask → terima JSON deteksi
-- Mode pipeline: inference runner / workflow Roboflow mengirim hasil ke backend
+- Mode realtime (opsi A): browser webcam → backend Node proxy → Roboflow WebRTC worker
+- Mode snapshot per detik (opsi B): browser capture frame → backend Node → FastAPI proxy → Roboflow Model API
+- Workflow Hosted API tetap tersedia untuk kebutuhan workflow image (opsional)
+- Python inference runner lokal adalah jalur lama dan tidak lagi menjadi alur utama
 - Bounding box / hasil deteksi dirender di sisi frontend
 
 4) Database:
@@ -106,14 +109,28 @@ INFERENCE_URL=http://127.0.0.1:5001
 EXPRESS_URL=http://127.0.0.1:5002
 INFERENCE_PORT=5001
 ROBOFLOW_API_KEY=isi_dengan_api_key
+ROBOFLOW_API_URL=https://serverless.roboflow.com
+ROBOFLOW_API_KEY=isi_dengan_api_key
+ROBOFLOW_WORKSPACE_NAME=visa-ramadhan
+ROBOFLOW_WORKFLOW_ID=fokusdetection-vfocus-rdwkd-logic
+ROBOFLOW_IMAGE_INPUT=image
+ROBOFLOW_REQUESTED_PLAN=webrtc-gpu-medium
+ROBOFLOW_REQUESTED_REGION=us
+ROBOFLOW_PROCESSING_TIMEOUT_SEC=3600
+ROBOFLOW_STREAM_OUTPUT=output_image
+ROBOFLOW_DATA_OUTPUT=focus_monitoring_json,frame_time,people
+ROBOFLOW_WORKFLOW_PARAMETERS_JSON={}
+
+# Hanya untuk mode pipeline Python lama / lokal
 ROBOFLOW_MODEL_ID=project/version
 USE_ROBOFLOW_WORKFLOW=true
-ROBOFLOW_WORKFLOW_URL=https://serverless.roboflow.com/infer/workflows/visa-ramadhan/detect-and-classify
 ```
 
 Catatan:
 - Dummy seeding default **nonaktif**. Aktifkan hanya jika dibutuhkan untuk demo awal.
 - Untuk production/Vercel, gunakan MongoDB Atlas / URI database publik yang bisa diakses dari cloud.
+- `ROBOFLOW_WORKFLOW_PARAMETERS_JSON` dipakai untuk mengirim parameter workflow image/WebRTC tanpa hard-code di frontend/backend.
+- Output image dari workflow akan disimpan ke `server/uploads/roboflow/` dan dilayani lewat `/uploads/...`, bukan dikembalikan sebagai base64 besar di response.
 
 ### 5) Setup Flask (YOLO)
 
@@ -151,6 +168,55 @@ python app.py
 Health check:
 - http://localhost:5001/health
 
+### 5b) Setup FastAPI (Roboflow Model Proxy)
+
+FastAPI dipakai untuk membungkus Roboflow Model API (endpoint `https://serverless.roboflow.com/<project>/<version>`).
+
+1. Masuk ke folder FastAPI:
+
+```bash
+cd server/fastapi_server
+```
+
+2. Buat virtual environment (disarankan):
+
+```bash
+python -m venv .venv
+```
+
+3. Aktifkan venv:
+- Windows PowerShell:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+4. Install dependency:
+
+```bash
+pip install -r requirements.txt
+```
+
+5. Pastikan env di `project/server/.env` sudah ada:
+- `ROBOFLOW_API_URL=https://serverless.roboflow.com`
+- `ROBOFLOW_API_KEY=...`
+- `ROBOFLOW_MODEL_ID=<project>/<version>` (contoh: `focus-detection/1`)
+- Atau jika memakai Workflow API seperti contoh:
+  - `ROBOFLOW_WORKFLOW_WORKSPACE=sastyus-workspace`
+  - `ROBOFLOW_WORKFLOW_ID=general-segmentation-api-2`
+  - `ROBOFLOW_WORKFLOW_CLASSES=fokus, tidak fokus`
+- `FASTAPI_URL=http://127.0.0.1:8000` (untuk backend Node, opsional)
+
+6. Jalankan FastAPI:
+
+```bash
+uvicorn main:app --host 127.0.0.1 --port 8000
+```
+
+Endpoint:
+- http://127.0.0.1:8000/health
+- http://127.0.0.1:8000/detect
+
 ### 6) Model YOLO (.pt)
 
 Flask akan mencoba memuat model default dari folder:
@@ -182,33 +248,69 @@ python app.py
 Buka:
 - Frontend: http://localhost:5173
 
-### 8) Live Pipeline Roboflow (Opsional)
+Terminal C (FastAPI Roboflow Model Proxy, jika memakai mode snapshot):
 
-Jika ingin memakai mode pipeline/Roboflow:
+```bash
+cd project/server/fastapi_server
+uvicorn main:app --host 127.0.0.1 --port 8000
+```
+
+### 8) Roboflow Webcam / Workflow Smoke Test
+
+Untuk validasi integrasi Roboflow image workflow:
+
+1. Jalankan smoke test:
+
+```bash
+cd project/server
+npm run smoke:roboflow
+```
+
+2. Pastikan env berikut valid di `project/server/.env`:
+- `ROBOFLOW_API_KEY`
+- `ROBOFLOW_API_URL`
+- `ROBOFLOW_WORKSPACE_NAME`
+- `ROBOFLOW_WORKFLOW_ID`
+- `ROBOFLOW_IMAGE_INPUT`
+- `ROBOFLOW_WORKFLOW_PARAMETERS_JSON` (opsional)
+
+Catatan penting:
+- smoke test akan menganggap integrasi valid bila:
+  - workflow mengembalikan response sukses berbentuk list dengan output keys, atau
+  - workflow mengembalikan structured workflow error yang detailnya bisa ditindaklanjuti
+
+### 8b) Roboflow Model API Smoke Test
+
+Untuk validasi koneksi langsung ke Roboflow Model API (tanpa FastAPI):
+
+```bash
+cd project/server
+npm run smoke:roboflow-model
+```
+
+### 9) Webcam lokal dengan Roboflow WebRTC
+
+Live Monitoring sekarang diarahkan ke jalur WebRTC:
 
 1. Jalankan backend:
 
 ```bash
-cd project
+cd project/server
 npm run dev
 ```
 
-2. Jalankan Python inference runner:
+2. Jalankan frontend:
 
 ```bash
-cd project/server
-python inference_runner.py
+cd project
+npm run client
 ```
 
-3. Pastikan env berikut valid di `project/server/.env`:
-- `ROBOFLOW_API_KEY`
-- `ROBOFLOW_MODEL_ID` atau `ROBOFLOW_WORKFLOW_URL`
-- `INFERENCE_URL`
-- `EXPRESS_URL`
+3. Login, buka halaman Live Monitoring, aktifkan kamera lokal, lalu klik `Start Monitoring`.
 
 Catatan penting:
-- mode live pipeline berbasis Python ini **cocok untuk lokal/dev**
-- proses long-running inference **tidak cocok dijalankan penuh di Vercel serverless**
+- status WebRTC dibaca dari backend `/roboflow/webrtc/status`, sehingga frontend tidak lagi mengunci `workspace`, `workflow`, atau output names secara manual
+- jika workflow Roboflow sendiri gagal di serverless (mis. step Gemini error), pesan error detail akan diteruskan ke UI
 
 ## Alur Monitoring (Singkat)
 
@@ -321,6 +423,7 @@ Untuk fitur live inference, gunakan service terpisah atau jalankan inference run
   - Pastikan deploy sudah memakai file `vercel.json`
   - Pastikan request menuju `/api/...` pada domain project yang sama
   - Pastikan backend function berhasil build dan `MONGODB_URI` valid
-- Live pipeline tidak menghasilkan deteksi:
-  - Cek `http://localhost:5001/status`
-  - Periksa `pipeline_error`, `last_workflow_error`, dan `camera_read_failures`
+- Roboflow WebRTC / Hosted API gagal walau koneksi hidup:
+  - Jalankan `cd server && npm run smoke:roboflow`
+  - Jika hasil menunjukkan `structured_error`, artinya request sudah sampai ke workflow, tetapi ada kegagalan di definisi workflow Roboflow
+  - Contoh yang teramati saat ini: step `scene_activity_check` dari Gemini berhenti karena `max_tokens` di workflow terlalu kecil

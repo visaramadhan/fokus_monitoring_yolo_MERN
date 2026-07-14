@@ -18,7 +18,8 @@ import settingsRoutes from './routes/settings.js';
 import liveMonitoringRoutes from './routes/liveMonitoring.js';
 import exportRoutes from './routes/export.js';
 import sessionRecordsRoutes from './routes/sessionRecords.js';
-import flaskIntegrationRoutes from './routes/flaskIntegration.js';
+import roboflowHostedRoutes from './routes/roboflowHosted.js';
+import roboflowModelProxyRoutes from './routes/roboflowModelProxy.js';
 import jadwalRoutes from './routes/jadwal.js';
 import modelsRoutes from './routes/models.js';
 import profileRoutes from './routes/profile.js';
@@ -63,7 +64,8 @@ app.use('/settings', settingsRoutes);
 app.use('/live-monitoring', liveMonitoringRoutes);
 app.use('/export', exportRoutes);
 app.use('/session-records', sessionRecordsRoutes);
-app.use('/flask', flaskIntegrationRoutes);
+app.use('/roboflow', roboflowHostedRoutes);
+app.use('/roboflow-model', roboflowModelProxyRoutes);
 app.use('/jadwal', jadwalRoutes);
 app.use('/models', modelsRoutes);
 app.use('/profile', profileRoutes);
@@ -167,7 +169,12 @@ export async function initDatabase() {
       return;
     }
 
-    if (String(process.env.ENABLE_IN_MEMORY).toLowerCase() === 'true') {
+    const inMemoryFlag = String(process.env.ENABLE_IN_MEMORY || '').toLowerCase();
+    const shouldUseInMemory =
+      inMemoryFlag === 'true' ||
+      (inMemoryFlag === '' && String(process.env.NODE_ENV || 'development').toLowerCase() !== 'production');
+
+    if (shouldUseInMemory) {
       const requiredBytes = Number(process.env.MONGOMS_REQUIRED_FREE_BYTES || 800_000_000);
       const driveRoot = path.parse(process.cwd()).root || 'C:\\';
       try {

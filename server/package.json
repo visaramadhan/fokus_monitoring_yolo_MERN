@@ -5,6 +5,8 @@
   "scripts": {
     "dev": "cross-env PORT=5002 node --watch server.js",
     "start": "cross-env PORT=5002 node server.js",
+    "smoke:roboflow": "node scripts/roboflowWorkflowSmoke.mjs",
+    "smoke:roboflow-model": "node scripts/roboflowModelSmoke.mjs",
     "migrate:relations:dry": "node utils/migrateAcademicRelations.js",
     "migrate:relations": "node utils/migrateAcademicRelations.js --apply"
   },

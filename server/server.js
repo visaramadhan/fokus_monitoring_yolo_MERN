@@ -20,7 +20,7 @@ if (httpsEnabled) {
   server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
     console.log(`Health check: https://localhost:${PORT}/health`);
-    console.log(`Flask integration available at: https://localhost:${PORT}/flask`);
+    console.log(`Roboflow Hosted API available at: https://localhost:${PORT}/roboflow`);
     console.log(`Models directory: ${uploadsDir}`);
   });
 } else {
@@ -28,7 +28,7 @@ if (httpsEnabled) {
   server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
     console.log(`Health check: http://localhost:${PORT}/health`);
-    console.log(`Flask integration available at: http://localhost:${PORT}/flask`);
+    console.log(`Roboflow Hosted API available at: http://localhost:${PORT}/roboflow`);
     console.log(`Models directory: ${uploadsDir}`);
   });
 }
