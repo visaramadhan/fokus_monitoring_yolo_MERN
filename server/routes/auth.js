@@ -66,8 +66,16 @@ router.post('/register', async (req, res) => {
 
 // Login
 router.post('/login', async (req, res) => {
+  // #region debug-point login-500-auth-entry
   try {
     const { username, password } = req.body;
+    console.error('[debug:login-500] auth.login.request', {
+      usernameType: typeof username,
+      passwordProvided: Boolean(password),
+      dbReadyState: mongoose.connection.readyState,
+      dbName: mongoose.connection?.name || null,
+      nodeEnv: process.env.NODE_ENV || null,
+    });
     
     // Mock logic removed to use real database authentication
     /*
@@ -78,11 +86,20 @@ router.post('/login', async (req, res) => {
     
     // Production code path (will not be reached in development)
     const user = await User.findOne({ username });
+    console.error('[debug:login-500] auth.login.userLookup', {
+      username,
+      userFound: Boolean(user),
+      userId: user?._id?.toString?.() || null,
+    });
     if (!user) {
       return res.status(400).json({ message: 'Invalid credentials' });
     }
 
     const isMatch = await user.comparePassword(password);
+    console.error('[debug:login-500] auth.login.passwordCheck', {
+      username,
+      isMatch,
+    });
     if (!isMatch) {
       return res.status(400).json({ message: 'Invalid credentials' });
     }
@@ -107,9 +124,16 @@ router.post('/login', async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Auth login error:', error);
+    console.error('[debug:login-500] auth.login.error', {
+      name: error?.name || null,
+      message: error?.message || String(error),
+      stack: error?.stack || null,
+      dbReadyState: mongoose.connection.readyState,
+      dbName: mongoose.connection?.name || null,
+    });
     res.status(500).json({ message: error.message || 'Internal Server Error' });
   }
+  // #endregion debug-point login-500-auth-entry
 });
 
 // Get current user
