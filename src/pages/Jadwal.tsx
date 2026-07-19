@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Plus, Search, Calendar, Clock, Users, BookOpen, Eye, Edit, Trash2, User } from 'lucide-react';
+import { Plus, Search, Calendar, Clock, Users, BookOpen, Edit, Trash2, User, Filter } from 'lucide-react';
 import axios from 'axios';
 import { useAuth } from '../contexts/AuthContext';
 import { useStatusModal } from '../contexts/StatusModalContext';
@@ -35,13 +35,36 @@ interface Subject {
   };
 }
 
+interface MeetingRecap {
+  _id: string;
+  jadwal_id?: string | { _id: string } | null;
+  sessionId?: string;
+  hasil_akhir_kelas: {
+    fokus: number;
+    tidak_fokus: number;
+    jumlah_hadir: number;
+    fokus_count?: number;
+    tidak_fokus_count?: number;
+  };
+  data_fokus: Array<{
+    id_siswa: string;
+    persen_fokus: number;
+    persen_tidak_fokus: number;
+    status: 'Baik' | 'Cukup' | 'Kurang';
+  }>;
+  catatan?: string;
+  createdAt: string;
+}
+
 export default function Jadwal() {
   const { user } = useAuth();
   const { showSuccess, showError } = useStatusModal();
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [subjects, setSubjects] = useState<Subject[]>([]);
+  const [meetingRecaps, setMeetingRecaps] = useState<MeetingRecap[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  const [filterYear, setFilterYear] = useState('');
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [editingSchedule, setEditingSchedule] = useState<Schedule | null>(null);
 
@@ -50,6 +73,7 @@ export default function Jadwal() {
   useEffect(() => {
     fetchSchedules();
     fetchSubjects();
+    fetchMeetingRecaps();
   }, []);
 
   const fetchSchedules = async () => {
@@ -74,6 +98,19 @@ export default function Jadwal() {
     }
   };
 
+  const fetchMeetingRecaps = async () => {
+    try {
+      const params: any = {};
+      if (user?.role === 'dosen') {
+        params.dosen = user.id;
+      }
+      const response = await axios.get('/api/pertemuan', { params });
+      setMeetingRecaps(Array.isArray(response.data) ? response.data : []);
+    } catch (error) {
+      console.error('Error fetching meeting recaps:', error);
+    }
+  };
+
   const handleDelete = async (id: string) => {
     if (window.confirm('Are you sure you want to delete this schedule?')) {
       try {
@@ -91,14 +128,35 @@ export default function Jadwal() {
     const matchesSearch = schedule.mata_kuliah.toLowerCase().includes(searchTerm.toLowerCase()) ||
                          schedule.kelas.toLowerCase().includes(searchTerm.toLowerCase()) ||
                          schedule.topik.toLowerCase().includes(searchTerm.toLowerCase());
+    const scheduleYear = new Date(schedule.tanggal).getFullYear();
+    const matchesYear = !filterYear || String(scheduleYear) === filterYear;
     
     // Filter by user role
     if (user?.role === 'dosen') {
-      return matchesSearch && toId(schedule.dosen_id) === user.id;
+      return matchesSearch && matchesYear && toId(schedule.dosen_id) === user.id;
     }
     
-    return matchesSearch;
+    return matchesSearch && matchesYear;
   }) : [];
+
+  const availableYears = Array.from(
+    new Set(
+      schedules
+        .map((schedule) => new Date(schedule.tanggal).getFullYear())
+        .filter((year) => !Number.isNaN(year))
+        .map((year) => String(year))
+    )
+  ).sort((a, b) => Number(b) - Number(a));
+
+  const latestRecapBySchedule = meetingRecaps.reduce<Record<string, MeetingRecap>>((acc, recap) => {
+    const scheduleId = toId(recap.jadwal_id);
+    if (!scheduleId) return acc;
+    const current = acc[scheduleId];
+    if (!current || new Date(recap.createdAt).getTime() > new Date(current.createdAt).getTime()) {
+      acc[scheduleId] = recap;
+    }
+    return acc;
+  }, {});
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -214,18 +272,47 @@ export default function Jadwal() {
       <motion.div 
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        className="relative max-w-md"
+        className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between"
       >
-        <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-          <Search className="h-5 w-5 text-gray-400" />
+        <div className="relative max-w-md flex-1">
+          <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+            <Search className="h-5 w-5 text-gray-400" />
+          </div>
+          <input
+            type="text"
+            className="block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md leading-5 bg-white placeholder-gray-500 focus:outline-none focus:placeholder-gray-400 focus:ring-1 focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+            placeholder="Search schedules..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+          />
         </div>
-        <input
-          type="text"
-          className="block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md leading-5 bg-white placeholder-gray-500 focus:outline-none focus:placeholder-gray-400 focus:ring-1 focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-          placeholder="Search schedules..."
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-        />
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <div className="relative min-w-[180px]">
+            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+              <Filter className="h-4 w-4 text-gray-400" />
+            </div>
+            <select
+              value={filterYear}
+              onChange={(e) => setFilterYear(e.target.value)}
+              className="block w-full rounded-md border border-gray-300 bg-white py-2 pl-9 pr-3 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              <option value="">Semua Tahun</option>
+              {availableYears.map((year) => (
+                <option key={year} value={year}>{year}</option>
+              ))}
+            </select>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setSearchTerm('');
+              setFilterYear('');
+            }}
+            className="inline-flex items-center justify-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+          >
+            Reset Filter
+          </button>
+        </div>
       </motion.div>
 
       {/* Schedule Grid */}
@@ -235,6 +322,9 @@ export default function Jadwal() {
         className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"
       >
         {filteredSchedules.map((schedule) => (
+          (() => {
+            const latestRecap = latestRecapBySchedule[schedule._id];
+            return (
           <motion.div 
             key={schedule._id}
             initial={{ opacity: 0, scale: 0.95 }}
@@ -298,6 +388,71 @@ export default function Jadwal() {
                   <User className="h-4 w-4 mr-1 text-gray-500" />
                   <span>{schedule.dosen_name}</span>
                 </div>
+
+                {latestRecap && (
+                  <div className="mt-4 rounded-xl border border-emerald-100 bg-emerald-50 p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-sm font-semibold text-emerald-900">Rekap Monitoring</h4>
+                      <span className="text-xs text-emerald-700">
+                        {new Date(latestRecap.createdAt).toLocaleString()}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-3 text-sm">
+                      <div className="rounded-lg bg-white px-3 py-2 border border-emerald-100">
+                        <div className="text-gray-500">Fokus</div>
+                        <div className="font-semibold text-emerald-700">
+                          {Number(latestRecap.hasil_akhir_kelas?.fokus || 0).toFixed(1)}%
+                        </div>
+                      </div>
+                      <div className="rounded-lg bg-white px-3 py-2 border border-emerald-100">
+                        <div className="text-gray-500">Tidak Fokus</div>
+                        <div className="font-semibold text-red-600">
+                          {Number(latestRecap.hasil_akhir_kelas?.tidak_fokus || 0).toFixed(1)}%
+                        </div>
+                      </div>
+                      <div className="rounded-lg bg-white px-3 py-2 border border-emerald-100">
+                        <div className="text-gray-500">Hadir</div>
+                        <div className="font-semibold text-gray-800">
+                          {Number(latestRecap.hasil_akhir_kelas?.jumlah_hadir || 0)}
+                        </div>
+                      </div>
+                    </div>
+
+                    {latestRecap.catatan && (
+                      <p className="text-xs text-emerald-800">{latestRecap.catatan}</p>
+                    )}
+
+                    <div className="max-h-40 overflow-auto rounded-lg border border-emerald-100 bg-white">
+                      <table className="min-w-full text-xs">
+                        <thead className="sticky top-0 bg-emerald-100 text-emerald-900">
+                          <tr>
+                            <th className="px-3 py-2 text-left font-medium">Siswa</th>
+                            <th className="px-3 py-2 text-left font-medium">Fokus</th>
+                            <th className="px-3 py-2 text-left font-medium">Tidak Fokus</th>
+                            <th className="px-3 py-2 text-left font-medium">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {latestRecap.data_fokus?.length ? latestRecap.data_fokus.map((item) => (
+                            <tr key={item.id_siswa} className="border-t border-emerald-50">
+                              <td className="px-3 py-2 text-gray-700">{item.id_siswa}</td>
+                              <td className="px-3 py-2 text-gray-700">{Number(item.persen_fokus || 0).toFixed(1)}%</td>
+                              <td className="px-3 py-2 text-gray-700">{Number(item.persen_tidak_fokus || 0).toFixed(1)}%</td>
+                              <td className="px-3 py-2 text-gray-700">{item.status}</td>
+                            </tr>
+                          )) : (
+                            <tr>
+                              <td colSpan={4} className="px-3 py-3 text-center text-gray-500">
+                                Rekap monitoring belum tersedia.
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
               </div>
               
               <div className="flex items-center space-x-2 ml-4">
@@ -316,6 +471,8 @@ export default function Jadwal() {
               </div>
             </div>
           </motion.div>
+            );
+          })()
         ))}
       </motion.div>
 
@@ -327,7 +484,9 @@ export default function Jadwal() {
         >
           <Calendar className="h-12 w-12 text-gray-400 mx-auto mb-4" />
           <h3 className="text-lg font-medium text-gray-900 mb-2">No schedules found</h3>
-          <p className="text-gray-500">Get started by creating your first schedule.</p>
+          <p className="text-gray-500">
+            {schedules.length === 0 ? 'Get started by creating your first schedule.' : 'Coba ubah kata kunci atau filter tahun.'}
+          </p>
         </motion.div>
       )}
 
@@ -342,6 +501,7 @@ export default function Jadwal() {
           }}
           onSuccess={() => {
             fetchSchedules();
+            fetchMeetingRecaps();
             setShowCreateModal(false);
             setEditingSchedule(null);
           }}
@@ -361,8 +521,11 @@ interface ScheduleModalProps {
 function ScheduleModal({ schedule, subjects, onClose, onSuccess }: ScheduleModalProps) {
   const { user } = useAuth();
   const { showSuccess, showError } = useStatusModal();
+  const initialSubjectId = typeof schedule?.mata_kuliah_id === 'string'
+    ? schedule.mata_kuliah_id
+    : schedule?.mata_kuliah_id?._id || '';
   const [formData, setFormData] = useState({
-    mata_kuliah_id: schedule?.mata_kuliah_id || '',
+    mata_kuliah_id: initialSubjectId,
     kelas: schedule?.kelas || '',
     tanggal: schedule?.tanggal?.split('T')[0] || new Date().toISOString().split('T')[0],
     jam_mulai: schedule?.jam_mulai || '08:00',
@@ -379,8 +542,13 @@ function ScheduleModal({ schedule, subjects, onClose, onSuccess }: ScheduleModal
     if (formData.mata_kuliah_id) {
       const subject = subjects.find(s => s._id === formData.mata_kuliah_id);
       setSelectedSubject(subject || null);
+      if (subject && formData.kelas && !subject.kelas.includes(formData.kelas)) {
+        setFormData(prev => ({ ...prev, kelas: '' }));
+      }
+    } else {
+      setSelectedSubject(null);
     }
-  }, [formData.mata_kuliah_id, subjects]);
+  }, [formData.mata_kuliah_id, formData.kelas, subjects]);
 
   useEffect(() => {
     // Calculate duration when times change
@@ -453,7 +621,7 @@ function ScheduleModal({ schedule, subjects, onClose, onSuccess }: ScheduleModal
               <label className="block text-sm font-medium text-gray-700">Subject</label>
               <select
                 value={formData.mata_kuliah_id}
-                onChange={(e) => setFormData({ ...formData, mata_kuliah_id: e.target.value })}
+                onChange={(e) => setFormData({ ...formData, mata_kuliah_id: e.target.value, kelas: '' })}
                 className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
                 required
               >

@@ -23,6 +23,7 @@ import roboflowModelProxyRoutes from './routes/roboflowModelProxy.js';
 import jadwalRoutes from './routes/jadwal.js';
 import modelsRoutes from './routes/models.js';
 import profileRoutes from './routes/profile.js';
+import aiServiceProxyRoutes from './routes/aiServiceProxy.js';
 import { createDummyData, purgeAllData, purgeDummyData } from './utils/seedData.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -32,6 +33,32 @@ dotenv.config();
 
 export const app = express();
 export const uploadsDir = path.join(__dirname, 'uploads/models');
+
+const DEBUG_ENV_PATH = path.join(process.cwd(), '.dbg', 'dashboard-db-503.env');
+
+async function reportDebugEvent(payload = {}) {
+  let debugUrl = 'http://127.0.0.1:7777/event';
+  let debugSessionId = 'dashboard-db-503';
+  try {
+    const envContent = fs.readFileSync(DEBUG_ENV_PATH, 'utf8');
+    debugUrl = envContent.match(/DEBUG_SERVER_URL=(.+)/)?.[1]?.trim() || debugUrl;
+    debugSessionId = envContent.match(/DEBUG_SESSION_ID=(.+)/)?.[1]?.trim() || debugSessionId;
+  } catch {}
+
+  try {
+    await fetch(debugUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessionId: debugSessionId,
+        runId: 'pre-fix',
+        source: 'server',
+        ts: Date.now(),
+        ...payload,
+      }),
+    });
+  } catch {}
+}
 
 let dbInitPromise = null;
 
@@ -45,8 +72,27 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 app.use((req, res, next) => {
   const reqPath = req.path || '';
-  if (reqPath === '/health' || reqPath === '/db/status') return next();
+  if (
+    reqPath === '/health' ||
+    reqPath === '/db/status' ||
+    reqPath === '/ai-service/health' ||
+    reqPath.startsWith('/ai-service/gradio')
+  ) return next();
   if (mongoose.connection.readyState !== 1) {
+    // #region debug-point A:db-guard-block
+    void reportDebugEvent({
+      hypothesisId: 'A',
+      location: 'server/app.js:db-guard',
+      msg: '[DEBUG] db guard blocked request',
+      data: {
+        method: req.method,
+        path: req.originalUrl || req.url || reqPath,
+        readyState: mongoose.connection.readyState,
+        dbName: mongoose.connection?.name || null,
+        hasDbInitPromise: Boolean(dbInitPromise),
+      },
+    });
+    // #endregion
     return res.status(503).json({ message: 'Database initializing, please retry shortly' });
   }
   next();
@@ -69,6 +115,7 @@ app.use('/roboflow-model', roboflowModelProxyRoutes);
 app.use('/jadwal', jadwalRoutes);
 app.use('/models', modelsRoutes);
 app.use('/profile', profileRoutes);
+app.use('/ai-service', aiServiceProxyRoutes);
 
 app.post('/yolo-detection', (req, res) => {
   try {
@@ -117,6 +164,17 @@ async function runSeedHooks() {
 }
 
 export async function initDatabase() {
+  // #region debug-point B:init-entry
+  await reportDebugEvent({
+    hypothesisId: 'B',
+    location: 'server/app.js:initDatabase:entry',
+    msg: '[DEBUG] initDatabase entry',
+    data: {
+      readyState: mongoose.connection.readyState,
+      hasDbInitPromise: Boolean(dbInitPromise),
+    },
+  });
+  // #endregion
   if (mongoose.connection.readyState === 1) return;
   if (dbInitPromise) {
     await dbInitPromise;
@@ -133,9 +191,35 @@ export async function initDatabase() {
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
+        // #region debug-point C:connect-attempt
+        await reportDebugEvent({
+          hypothesisId: 'C',
+          location: 'server/app.js:initDatabase:connectAttempt',
+          msg: '[DEBUG] db connect attempt',
+          data: {
+            attempt,
+            maxRetries,
+            targetKind: targetUri.includes('mongodb.net') ? 'atlas' : 'local',
+            readyStateBeforeConnect: mongoose.connection.readyState,
+          },
+        });
+        // #endregion
         await mongoose.connect(targetUri, {
           serverSelectionTimeoutMS: 8000,
         });
+        // #region debug-point C:connect-success
+        await reportDebugEvent({
+          hypothesisId: 'C',
+          location: 'server/app.js:initDatabase:connectSuccess',
+          msg: '[DEBUG] db connect success',
+          data: {
+            attempt,
+            readyStateAfterConnect: mongoose.connection.readyState,
+            dbName: mongoose.connection?.name || null,
+            host: mongoose.connection?.host || null,
+          },
+        });
+        // #endregion
         console.log(`✅ Connected to MongoDB (${targetUri.includes('mongodb.net') ? 'Atlas' : 'local'})`);
         await runSeedHooks();
         return;
@@ -144,6 +228,23 @@ export async function initDatabase() {
         const isDnsError = /ENOTFOUND|EAI_AGAIN|getaddrinfo|Name resolution/i.test(msg);
         const isAuthError = /auth/i.test(msg);
         const isConnRefused = /ECONNREFUSED/i.test(msg);
+
+        // #region debug-point D:connect-failure
+        await reportDebugEvent({
+          hypothesisId: 'D',
+          location: 'server/app.js:initDatabase:connectFailure',
+          msg: '[DEBUG] db connect failure',
+          data: {
+            attempt,
+            maxRetries,
+            readyStateAfterFailure: mongoose.connection.readyState,
+            isDnsError,
+            isAuthError,
+            isConnRefused,
+            message: msg,
+          },
+        });
+        // #endregion
 
         console.error(`❌ MongoDB connection error (attempt ${attempt}/${maxRetries}): ${msg}`);
         if (isDnsError) {
@@ -179,6 +280,19 @@ export async function initDatabase() {
       const driveRoot = path.parse(process.cwd()).root || 'C:\\';
       try {
         const { free } = await checkDiskSpace(driveRoot);
+        // #region debug-point E:in-memory-decision
+        await reportDebugEvent({
+          hypothesisId: 'E',
+          location: 'server/app.js:initDatabase:inMemoryDecision',
+          msg: '[DEBUG] db in-memory fallback decision',
+          data: {
+            shouldUseInMemory,
+            freeBytes: free,
+            requiredBytes,
+            driveRoot,
+          },
+        });
+        // #endregion
         if (free < requiredBytes) {
           console.warn('⚠️ In-memory MongoDB disabled: insufficient free space.');
           console.warn(`Free: ${Math.round(free / 1e6)}MB < Required: ${Math.round(requiredBytes / 1e6)}MB`);

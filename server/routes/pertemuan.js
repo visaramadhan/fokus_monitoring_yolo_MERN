@@ -14,6 +14,37 @@ function toObjectIdOrNull(value) {
   return new mongoose.Types.ObjectId(String(raw));
 }
 
+function parseDateRangeQuery({ year, startDate, endDate }) {
+  if (startDate || endDate) {
+    if (!startDate || !endDate) {
+      return { error: 'startDate and endDate must be provided together.' };
+    }
+
+    const start = new Date(`${String(startDate)}T00:00:00.000Z`);
+    const end = new Date(`${String(endDate)}T23:59:59.999Z`);
+
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+      return { error: 'Invalid startDate or endDate. Use YYYY-MM-DD format.' };
+    }
+    if (start > end) {
+      return { error: 'startDate must be earlier than or equal to endDate.' };
+    }
+
+    return { range: { $gte: start, $lte: end } };
+  }
+
+  if (!year) return { range: null };
+
+  const rawYear = String(year).trim();
+  if (!/^\d{4}$/.test(rawYear)) {
+    return { error: 'Invalid year. Use YYYY format.' };
+  }
+
+  const start = new Date(`${rawYear}-01-01T00:00:00.000Z`);
+  const end = new Date(`${Number(rawYear) + 1}-01-01T00:00:00.000Z`);
+  return { range: { $gte: start, $lt: end } };
+}
+
 async function enrichPertemuanPayload(payload = {}) {
   const next = { ...payload };
   const liveSessionObjectId = toObjectIdOrNull(next.live_session_id);
@@ -44,7 +75,7 @@ async function enrichPertemuanPayload(payload = {}) {
 // Get all meetings
 router.get('/', auth, async (req, res) => {
   try {
-    const { kelas, mata_kuliah, dosen, mata_kuliah_id } = req.query;
+    const { kelas, mata_kuliah, dosen, mata_kuliah_id, year, startDate, endDate } = req.query;
     let query = {};
     
     if (kelas) query.kelas = kelas;
@@ -56,6 +87,14 @@ router.get('/', auth, async (req, res) => {
         return res.status(400).json({ message: 'Invalid mata_kuliah_id' });
       }
       query.mata_kuliah_id = new mongoose.Types.ObjectId(raw);
+    }
+
+    const dateRange = parseDateRangeQuery({ year, startDate, endDate });
+    if (dateRange.error) {
+      return res.status(400).json({ message: dateRange.error });
+    }
+    if (dateRange.range) {
+      query.tanggal = dateRange.range;
     }
 
     const pertemuan = await Pertemuan.find(query)

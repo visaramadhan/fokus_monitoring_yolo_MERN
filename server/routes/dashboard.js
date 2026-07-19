@@ -8,19 +8,68 @@ import mongoose from 'mongoose';
 
 const router = express.Router();
 
+function parseDateRangeQuery({ year, startDate, endDate }) {
+  if (startDate || endDate) {
+    if (!startDate || !endDate) {
+      return { error: 'startDate and endDate must be provided together.' };
+    }
+
+    const start = new Date(`${String(startDate)}T00:00:00.000Z`);
+    const end = new Date(`${String(endDate)}T23:59:59.999Z`);
+
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+      return { error: 'Invalid startDate or endDate. Use YYYY-MM-DD format.' };
+    }
+    if (start > end) {
+      return { error: 'startDate must be earlier than or equal to endDate.' };
+    }
+
+    return { range: { $gte: start, $lte: end } };
+  }
+
+  if (!year) return { range: null };
+  const rawYear = String(year).trim();
+  if (!/^\d{4}$/.test(rawYear)) {
+    return { error: 'Invalid year. Use YYYY format.' };
+  }
+
+  const start = new Date(`${rawYear}-01-01T00:00:00.000Z`);
+  const end = new Date(`${Number(rawYear) + 1}-01-01T00:00:00.000Z`);
+  return { range: { $gte: start, $lt: end } };
+}
+
 // Get dashboard overview
 router.get('/overview', auth, async (req, res) => {
   try {
+    const { year, startDate, endDate } = req.query;
     let query = {};
+    const dateRange = parseDateRangeQuery({ year, startDate, endDate });
+
+    if (dateRange.error) {
+      return res.status(400).json({ message: dateRange.error });
+    }
     
     // Filter by user role
     if (req.user.role === 'dosen') {
       query.dosen_id = req.user._id;
     }
+    if (dateRange.range) {
+      query.tanggal = dateRange.range;
+    }
 
-    const totalKelas = await Kelas.countDocuments();
+    const kelasQuery = year
+      ? { tahun_ajaran: { $regex: String(year).trim() } }
+      : {};
+    const mataKuliahQuery = req.user.role === 'dosen'
+      ? { dosen_id: req.user._id }
+      : {};
+    if (dateRange.range) {
+      mataKuliahQuery.createdAt = dateRange.range;
+    }
+
+    const totalKelas = await Kelas.countDocuments(kelasQuery);
     const totalMataKuliah = await MataKuliah.countDocuments(
-      req.user.role === 'dosen' ? { dosen_id: req.user._id } : {}
+      mataKuliahQuery
     );
     const totalPertemuan = await Pertemuan.countDocuments(query);
     const totalDosen = await User.countDocuments({ role: 'dosen' });
@@ -46,7 +95,7 @@ router.get('/overview', auth, async (req, res) => {
 
     // Get class performance
     const classPerformance = await Pertemuan.aggregate([
-      ...(req.user.role === 'dosen' ? [{ $match: { dosen_id: req.user._id } }] : []),
+      { $match: query },
       {
         $group: {
           _id: '$kelas',
@@ -62,6 +111,7 @@ router.get('/overview', auth, async (req, res) => {
     let dosenPerformance = [];
     if (req.user.role === 'admin') {
       dosenPerformance = await Pertemuan.aggregate([
+        { $match: query },
         {
           $lookup: {
             from: 'users',
@@ -113,6 +163,10 @@ router.get('/focus-trends', auth, async (req, res) => {
     let matchQuery = {};
     const interval = String(req.query.interval || 'month').toLowerCase();
     const subjectId = req.query.subjectId ? String(req.query.subjectId) : '';
+    const dateRange = parseDateRangeQuery(req.query || {});
+    if (dateRange.error) {
+      return res.status(400).json({ message: dateRange.error });
+    }
     
     if (req.user.role === 'dosen') {
       matchQuery.dosen_id = req.user._id;
@@ -123,6 +177,9 @@ router.get('/focus-trends', auth, async (req, res) => {
       } catch (e) {
         return res.status(400).json({ message: 'Invalid subjectId' });
       }
+    }
+    if (dateRange.range) {
+      matchQuery.tanggal = dateRange.range;
     }
 
     let focusTrends = [];

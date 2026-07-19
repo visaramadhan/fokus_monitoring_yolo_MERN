@@ -4,10 +4,29 @@ import { auth } from '../middleware/auth.js';
 
 const router = express.Router();
 
+function buildAcademicYearQuery(year) {
+  const rawYear = String(year || '').trim();
+  if (!/^\d{4}$/.test(rawYear)) {
+    return { error: 'Invalid year. Use YYYY format.' };
+  }
+  return { tahun_ajaran: { $regex: rawYear } };
+}
+
 // Get all classes
 router.get('/', auth, async (req, res) => {
   try {
-    const kelas = await Kelas.find().sort({ nama_kelas: 1 });
+    const { year } = req.query;
+    const query = {};
+
+    if (year) {
+      const yearQuery = buildAcademicYearQuery(year);
+      if (yearQuery.error) {
+        return res.status(400).json({ message: yearQuery.error });
+      }
+      Object.assign(query, yearQuery);
+    }
+
+    const kelas = await Kelas.find(query).sort({ nama_kelas: 1 });
     res.json(kelas);
   } catch (error) {
     res.status(500).json({ message: error.message });

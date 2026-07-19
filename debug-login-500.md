@@ -25,6 +25,9 @@ Status: [OPEN]
 - `server/app.js` dan `server/routes/auth.js` sama-sama mengembalikan `503` saat DB belum ready, jadi `500` mengarah ke exception di dalam handler login atau adapter deploy.
 - Seeding dummy user default hanya aktif di non-production, jadi akun `admin/admin123` tidak otomatis ada di server production kecuali `ENABLE_DUMMY_DATA=true`.
 - Instrumentasi sudah ditambahkan di `api/index.js` dan `server/routes/auth.js` untuk menangkap route, status DB, hasil lookup user, dan stack error.
+- Bukti runtime deploy terbaru menunjukkan server gagal boot lebih awal dengan `SyntaxError: The requested module '@roboflow/inference-sdk' does not provide an export named 'InferenceHTTPClient'` dari `server/utils/roboflowWorkflow.js`.
+- Karena app gagal boot, request `/api/auth/login` ikut berakhir `500` meskipun route login bukan akar masalah utama.
 
 ## Notes
 - Belum ada perubahan logic bisnis; baru instrumentasi runtime.
+- Fix sementara yang diterapkan: memutus import dan mount route Roboflow di `server/app.js`, lalu menggantinya dengan endpoint stub `503` agar server bisa startup tanpa SDK Roboflow.

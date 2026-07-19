@@ -41,6 +41,13 @@ interface Meeting {
     jumlah_hadir: number;
   };
   catatan: string;
+  record_events: Array<{
+    timestamp: string;
+    id: string;
+    label: string;
+    status: string;
+    confidence: number;
+  }>;
   createdAt: string;
 }
 
@@ -480,6 +487,45 @@ export default function MeetingDetail() {
               ))}
             </tbody>
           </table>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200">
+        <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+          <h3 className="text-lg font-semibold text-gray-900">Timestamp Monitoring</h3>
+          <span className="text-sm text-gray-500">{meeting.record_events?.length || 0} event</span>
+        </div>
+        <div className="p-6">
+          {meeting.record_events?.length ? (
+            <div className="max-h-[420px] overflow-auto rounded-xl border border-gray-100">
+              <table className="min-w-full divide-y divide-gray-200 text-sm">
+                <thead className="bg-gray-50 sticky top-0 z-10">
+                  <tr>
+                    <th className="px-4 py-3 text-left font-medium text-gray-600">Timestamp</th>
+                    <th className="px-4 py-3 text-left font-medium text-gray-600">ID</th>
+                    <th className="px-4 py-3 text-left font-medium text-gray-600">Label</th>
+                    <th className="px-4 py-3 text-left font-medium text-gray-600">Status</th>
+                    <th className="px-4 py-3 text-left font-medium text-gray-600">Confidence</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 bg-white">
+                  {meeting.record_events.slice().reverse().map((event, index) => (
+                    <tr key={`${event.timestamp}-${event.id}-${index}`}>
+                      <td className="px-4 py-3 text-gray-700">{event.timestamp}</td>
+                      <td className="px-4 py-3 text-gray-700">{event.id}</td>
+                      <td className="px-4 py-3 text-gray-700">{event.label}</td>
+                      <td className="px-4 py-3 text-gray-700">{event.status}</td>
+                      <td className="px-4 py-3 text-gray-700">{Number(event.confidence || 0).toFixed(3)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 px-4 py-8 text-center text-sm text-gray-500">
+              Belum ada timestamp monitoring yang tersimpan untuk pertemuan ini.
+            </div>
+          )}
         </div>
       </div>
     </div>

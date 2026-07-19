@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import axios from 'axios';
-import { Plus, Search, Users, Eye, Edit, Trash2 } from 'lucide-react';
+import { Plus, Search, Users, Eye, Edit, Trash2, Filter } from 'lucide-react';
 import { useStatusModal } from '../contexts/StatusModalContext';
 
 interface Kelas {
@@ -17,11 +17,26 @@ interface Kelas {
   createdAt: string;
 }
 
+function extractAcademicYears(kelas: Kelas) {
+  const matches = String(kelas.tahun_ajaran || '').match(/\d{4}/g);
+  if (matches?.length) {
+    return matches;
+  }
+
+  const createdYear = new Date(kelas.createdAt).getFullYear();
+  return Number.isNaN(createdYear) ? [] : [String(createdYear)];
+}
+
+function sortYearsDesc(years: string[]) {
+  return [...years].sort((a, b) => Number(b) - Number(a));
+}
+
 export default function Classes() {
   const { showSuccess, showError } = useStatusModal();
   const [classes, setClasses] = useState<Kelas[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  const [filterYear, setFilterYear] = useState('');
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [editingClass, setEditingClass] = useState<Kelas | null>(null);
 
@@ -54,9 +69,16 @@ export default function Classes() {
     }
   };
 
-  const filteredClasses = classes.filter(kelas =>
-    kelas.nama_kelas.toLowerCase().includes(searchTerm.toLowerCase())
+  const availableYears = sortYearsDesc(
+    Array.from(new Set(classes.flatMap((kelas) => extractAcademicYears(kelas))))
   );
+
+  const filteredClasses = classes.filter((kelas) => {
+    const matchesSearch = kelas.nama_kelas.toLowerCase().includes(searchTerm.toLowerCase());
+    const classYears = extractAcademicYears(kelas);
+    const matchesYear = !filterYear || classYears.includes(filterYear);
+    return matchesSearch && matchesYear;
+  });
 
   if (loading) {
     return (
@@ -86,17 +108,48 @@ export default function Classes() {
       </div>
 
       {/* Search */}
-      <div className="relative max-w-md">
-        <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-          <Search className="h-5 w-5 text-gray-400" />
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div className="relative max-w-md flex-1">
+          <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+            <Search className="h-5 w-5 text-gray-400" />
+          </div>
+          <input
+            type="text"
+            className="block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md leading-5 bg-white placeholder-gray-500 focus:outline-none focus:placeholder-gray-400 focus:ring-1 focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+            placeholder="Search classes..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+          />
         </div>
-        <input
-          type="text"
-          className="block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md leading-5 bg-white placeholder-gray-500 focus:outline-none focus:placeholder-gray-400 focus:ring-1 focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-          placeholder="Search classes..."
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-        />
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <div className="relative min-w-[180px]">
+            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+              <Filter className="h-4 w-4 text-gray-400" />
+            </div>
+            <select
+              value={filterYear}
+              onChange={(e) => setFilterYear(e.target.value)}
+              className="block w-full rounded-md border border-gray-300 bg-white py-2 pl-9 pr-3 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              <option value="">Semua Tahun</option>
+              {availableYears.map((year) => (
+                <option key={year} value={year}>
+                  {year}
+                </option>
+              ))}
+            </select>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setSearchTerm('');
+              setFilterYear('');
+            }}
+            className="inline-flex items-center justify-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+          >
+            Reset Filter
+          </button>
+        </div>
       </div>
 
       {/* Classes Grid */}
@@ -147,7 +200,9 @@ export default function Classes() {
         <div className="text-center py-12">
           <Users className="h-12 w-12 text-gray-400 mx-auto mb-4" />
           <h3 className="text-lg font-medium text-gray-900 mb-2">No classes found</h3>
-          <p className="text-gray-500">Get started by creating your first class.</p>
+          <p className="text-gray-500">
+            {classes.length === 0 ? 'Get started by creating your first class.' : 'Coba ubah kata kunci atau filter tahun.'}
+          </p>
         </div>
       )}
 

@@ -1,109 +1,14 @@
-import { useState, useEffect, useRef, Fragment } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { 
-  Play, 
-  Square, 
-  Camera, 
-  Eye, 
-  EyeOff, 
-  Download,
-  Settings,
-  BarChart3,
-  Clock,
-  Target,
-  Grid3X3,
-  Trash2,
-  Save,
-  Users,
-  BookOpen,
-  Brain,
-  Upload,
-  Calendar,
-  User,
-  CheckCircle,
-  AlertCircle,
-  XCircle
-} from 'lucide-react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
+import { useState, useEffect, useRef } from 'react';
+import { Play, Square, Download, Users, BookOpen, User, Calendar, Eye, Camera } from 'lucide-react';
 import axios from 'axios';
-import { webrtc, type Connector, type WebRTCOutputData } from '@roboflow/inference-sdk';
 import { useAuth } from '../contexts/AuthContext';
 import { useStatusModal } from '../contexts/StatusModalContext';
 
-interface SeatPosition {
-  seat_id: number;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  is_occupied: boolean;
-  student_id: string | null;
-  face_detected: boolean;
-  gesture_type: string;
-  confidence: number;
-  focus_start_time: number | null;
-  total_focus_duration: number;
-  attendance_time: string | null;
-  departure_time: string | null;
-}
-
-interface DetectionData {
-  timestamp: string;
-  totalDetections: number;
-  focusedCount: number;
-  notFocusedCount: number;
-  sleepingCount: number;
-  phoneUsingCount: number;
-  chattingCount: number;
-  yawningCount: number;
-  writingCount: number;
-  focusPercentage: number;
-  label_counts?: Record<string, number>;
-  seatData: SeatPosition[];
-}
-
-interface LiveSession {
+interface UserOption {
   _id: string;
-  sessionId: string;
-  jadwal_id?: string | { _id: string } | null;
-  kelas_id?: string | { _id: string } | null;
-  mata_kuliah_id?: string | { _id: string } | null;
-  dosen_id?: string | { _id: string } | null;
-  kelas: string;
-  mata_kuliah: string;
-  startTime: string;
-  isActive: boolean;
-  detectionData: DetectionData[];
-  seatPositions: SeatPosition[];
-  summary: {
-    averageFocus: number;
-    peakFocus: number;
-    lowestFocus: number;
-  };
-}
-
-interface CameraDevice {
-  deviceId: string;
-  label: string;
-}
-
-interface Schedule {
-  seat_positions: any;
-  _id: string;
-  kelas_id?: string | { _id: string } | null;
-  kelas: string;
-  mata_kuliah: string;
-  mata_kuliah_id: string | { _id: string };
-  dosen_id: string | { _id: string };
-  dosen_name: string;
-  tanggal: string;
-  jam_mulai: string;
-  jam_selesai: string;
-  durasi: number;
-  pertemuan_ke: number;
-  topik: string;
-  ruangan: string;
-  status: string;
+  role: string;
+  nama_lengkap?: string;
+  username?: string;
 }
 
 interface MataKuliah {
@@ -113,3192 +18,1034 @@ interface MataKuliah {
   kelas: string[];
 }
 
-interface UserOption {
+interface Schedule {
   _id: string;
-  role: string;
-  nama_lengkap?: string;
-  username?: string;
+  kelas: string;
+  mata_kuliah: string;
+  dosen_name: string;
+  tanggal: string;
+  jam_mulai: string;
+  jam_selesai: string;
+  pertemuan_ke: number;
+  topik: string;
+  status: 'scheduled' | 'ongoing' | 'completed' | 'cancelled';
 }
 
-interface ModelFile {
-  name: string;
-  path: string;
-  size: number;
-  uploadedAt: string;
-}
-
-interface YoloDetection {
-  class_name: string;
-  confidence: number;
-  bbox: { x1: number; y1: number; x2: number; y2: number };
-}
-
-interface DetectionRecord {
-  id: string;
+interface RecordEventRow {
   timestamp: string;
-  elapsedTime: string;
-  totalDetections: number;
-  focusedCount: number;
-  notFocusedCount: number;
-  yawningCount: number;
-  chattingCount: number;
-  focusPercentage: number;
-  summary: string;
+  id: string;
+  label: string;
+  status: string;
+  confidence: number;
 }
 
-interface RoboflowWebRtcStatus {
-  workspace_name: string;
-  workflow_id: string;
-  image_input: string;
-  stream_output: string[];
-  data_output: string[];
-  requested_plan?: string;
-  requested_region?: string;
-  processing_timeout_sec?: number;
-  workflow_parameters?: Record<string, unknown>;
+interface CameraDevice {
+  deviceId: string;
+  label: string;
+}
+
+interface AnalyzeMetrics {
+  status: string;
+  people_count?: number;
+  focused_count?: number;
+  not_focused_count?: number;
+  people?: Array<{
+    id?: string;
+    label?: string;
+    status?: string;
+    confidence?: number;
+  }>;
+}
+
+interface RecordSummaryRow {
+  id: string;
+  label: string;
+  focused: number;
+  notFocused: number;
+  total: number;
+  firstSeen: string;
+  lastSeen: string;
 }
 
 export default function LiveMonitoring() {
   const { user } = useAuth();
   const { showSuccess, showError } = useStatusModal();
-  
-  // Session Management
-  const [isMonitoring, setIsMonitoring] = useState(false);
-  const [currentSession, setCurrentSession] = useState<LiveSession | null>(null);
-  const [detectionData, setDetectionData] = useState<DetectionData[]>([]);
-  const [detectionRecords, setDetectionRecords] = useState<DetectionRecord[]>([]);
-  
-  // Configuration
-  const [selectedSchedule, setSelectedSchedule] = useState('');
-  const [activeSchedule, setActiveSchedule] = useState<Schedule | null>(null);
-  const [selectedDosenId, setSelectedDosenId] = useState('');
+
+  // Selection states
+  const [selectedDosenId, setSelectedDosenId] = useState<string>('');
   const [dosenOptions, setDosenOptions] = useState<UserOption[]>([]);
-  const [subjects, setSubjects] = useState<MataKuliah[]>([]);
-  const [loadingSubjects, setLoadingSubjects] = useState(false);
-  const [selectedSubjectId, setSelectedSubjectId] = useState('');
-  const [selectedClassName, setSelectedClassName] = useState('');
-  const [sessionName, setSessionName] = useState('');
-  const [showSettings, setShowSettings] = useState(false);
-  const [showCameraSettings, setShowCameraSettings] = useState(false);
-  const [showAnalytics, setShowAnalytics] = useState(false);
-  const [targetFocusRate, setTargetFocusRate] = useState(80); // Target focus rate in percentage
-  const [gridSize, setGridSize] = useState<'small' | 'medium' | 'large'>('medium'); // Grid size for seat layout
-  const [savedLayouts, setSavedLayouts] = useState<{name: string, positions: SeatPosition[]}[]>([]);
-  const [currentLayout, setCurrentLayout] = useState<string>('');
-  
-  // Camera & Labelling
-  const [cameras, setCameras] = useState<CameraDevice[]>([]);
-  const [selectedCamera, setSelectedCamera] = useState('');
-  const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
-  const [seatPositions, setSeatPositions] = useState<SeatPosition[]>([]);
-  const [totalSeats, setTotalSeats] = useState(30);
-  
-  // Drawing State
-  const [isDrawing, setIsDrawing] = useState(false);
-  const [currentSeat, setCurrentSeat] = useState<Partial<SeatPosition> | null>(null);
-  const [isLabellingMode, setIsLabellingMode] = useState(false);
-  
-  // Data
+  const [selectedKelas, setSelectedKelas] = useState<string>('');
+  const [availableKelas, setAvailableKelas] = useState<string[]>([]);
+  const [selectedScheduleId, setSelectedScheduleId] = useState<string>('');
   const [schedules, setSchedules] = useState<Schedule[]>([]);
-  const [models, setModels] = useState<ModelFile[]>([]);
-  
-  // Hosted inference status
-  const [flaskStatus, setFlaskStatus] = useState<'disconnected' | 'connected' | 'error'>('disconnected');
-  const [modelStatus, setModelStatus] = useState<'inactive' | 'loading' | 'active' | 'error'>('inactive');
-  const [flaskError, setFlaskError] = useState<string>('');
+  const [activeSchedule, setActiveSchedule] = useState<Schedule | null>(null);
+
+  // Monitoring states
+  const [isMonitoring, setIsMonitoring] = useState(false);
+  const [currentSessionId, setCurrentSessionId] = useState<string>('');
+  const [sessionStartTime, setSessionStartTime] = useState<number>(0);
+  const [recordStatusText, setRecordStatusText] = useState<string>('');
+  const [recordEvents, setRecordEvents] = useState<RecordEventRow[]>([]);
+  const [cameras, setCameras] = useState<CameraDevice[]>([]);
+  const [selectedCameraId, setSelectedCameraId] = useState<string>('');
+  const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
   const [annotatedImage, setAnnotatedImage] = useState<string>('');
-  const [yoloDetections, setYoloDetections] = useState<YoloDetection[]>([]);
-  const [modelInfo, setModelInfo] = useState<{ names: Record<string, string>; num_classes: number } | null>(null);
-  const [detectionConf, setDetectionConf] = useState(0.5);
-  const [detectionWidth, setDetectionWidth] = useState(640);
-  const [detectionJpegQuality, setDetectionJpegQuality] = useState(0.72);
-  const [recordIntervalSec, setRecordIntervalSec] = useState(3);
-  const [lastInferenceMs, setLastInferenceMs] = useState<number | null>(null);
-  const [isTestingDetection, setIsTestingDetection] = useState(false);
-  const [useInferencePipeline, setUseInferencePipeline] = useState(true);
-  const [pipelineCameraIndex, setPipelineCameraIndex] = useState(0);
-  const [pipelineMaxFps, setPipelineMaxFps] = useState(10);
-  const [pipelineRecordIntervalSec, setPipelineRecordIntervalSec] = useState(5);
-  const [pipelineStatus, setPipelineStatus] = useState<'disconnected' | 'connected' | 'error'>('disconnected');
-  const [pipelineError, setPipelineError] = useState<string>('');
-  const [pipelineRunnerState, setPipelineRunnerState] = useState<string>('');
-  const [webRtcStatusConfig, setWebRtcStatusConfig] = useState<RoboflowWebRtcStatus | null>(null);
+  const [analyzeMetrics, setAnalyzeMetrics] = useState<AnalyzeMetrics | null>(null);
+  const [isCameraLoading, setIsCameraLoading] = useState(false);
+  const [isVideoReady, setIsVideoReady] = useState(false);
+  const [recordSummary, setRecordSummary] = useState<RecordSummaryRow[]>([]);
+  const [lastMonitoringReport, setLastMonitoringReport] = useState<{
+    status: string;
+    events: RecordEventRow[];
+    summary: RecordSummaryRow[];
+    schedule: Schedule | null;
+  } | null>(null);
 
-  const selectedSubject = subjects.find((s) => s._id === selectedSubjectId) || null;
-  
-  // Refs
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const detectionIntervalRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const isProcessingRef = useRef(false);
-  const lastBackendSaveAtRef = useRef(0);
-  const sessionStartedAtRef = useRef<number | null>(null);
-  const lastRecordAtRef = useRef(0);
-  const isMonitoringRef = useRef(false);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const captureCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const lastCaptureDimsRef = useRef<{ width: number; height: number } | null>(null);
-  const detectionMemoryRef = useRef<Map<string, { det: YoloDetection; lastSeen: number }>>(new Map());
-  const requestDrawRef = useRef<number | null>(null);
-  const sessionStartTimeRef = useRef(0);
-  const webrtcConnectionRef = useRef<any | null>(null);
+  const analyzeIntervalRef = useRef<number | null>(null);
+  const isAnalyzingRef = useRef(false);
+  const streamRef = useRef<MediaStream | null>(null);
 
-  const todayStr = () => {
-    const d = new Date();
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, '0');
-    const dd = String(d.getDate()).padStart(2, '0');
-    return `${yyyy}-${mm}-${dd}`;
+  const formatNow = () => {
+    const date = new Date();
+    const yyyy = date.getFullYear();
+    const mm = String(date.getMonth() + 1).padStart(2, '0');
+    const dd = String(date.getDate()).padStart(2, '0');
+    const hh = String(date.getHours()).padStart(2, '0');
+    const mi = String(date.getMinutes()).padStart(2, '0');
+    const ss = String(date.getSeconds()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
   };
 
-  const isToday = (dateValue: any) => {
-    const d = new Date(dateValue);
-    if (Number.isNaN(d.getTime())) return false;
-    const now = new Date();
-    return (
-      d.getFullYear() === now.getFullYear() &&
-      d.getMonth() === now.getMonth() &&
-      d.getDate() === now.getDate()
-    );
-  };
-
-  const formatElapsed = (totalSeconds: number) => {
-    const m = Math.floor(totalSeconds / 60);
-    const s = totalSeconds % 60;
-    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-  };
-
-  const attachStreamToVideo = async (stream: MediaStream | null) => {
-    if (!videoRef.current) return;
-    videoRef.current.srcObject = stream;
-    if (stream) {
-      await videoRef.current.play().catch(() => {});
-      requestAnimationFrame(() => {
-        syncCanvasSize();
-      });
-    }
-  };
-
-  useEffect(() => {
-    isMonitoringRef.current = isMonitoring;
-  }, [isMonitoring]);
-
-  useEffect(() => {
-    getCameraDevices();
-    fetchModels();
-    if (!useInferencePipeline) {
-      checkFlaskStatus();
-    }
-    
-    return () => {
-      if (cameraStream) {
-        cameraStream.getTracks().forEach(track => track.stop());
-      }
-      if (detectionIntervalRef.current) {
-        clearTimeout(detectionIntervalRef.current);
-      }
-      void stopWebRtcPipeline();
-    };
-  }, [useInferencePipeline]);
-
-  const checkPipelineStatus = async (): Promise<{ ok: boolean; message?: string }> => {
-    try {
-      const res = await axios.get('/api/roboflow/webrtc/status', { timeout: 5000 });
-      if (res.data?.ok) {
-        setPipelineStatus('connected');
-        setPipelineRunnerState('ready');
-        setPipelineError('');
-        setWebRtcStatusConfig({
-          workspace_name: String(res.data.workspace_name || ''),
-          workflow_id: String(res.data.workflow_id || ''),
-          image_input: String(res.data.image_input || 'image'),
-          stream_output: Array.isArray(res.data.stream_output) ? res.data.stream_output : [],
-          data_output: Array.isArray(res.data.data_output) ? res.data.data_output : [],
-          requested_plan: res.data.requested_plan,
-          requested_region: res.data.requested_region,
-          processing_timeout_sec: Number(res.data.processing_timeout_sec || 0) || undefined,
-          workflow_parameters:
-            res.data.workflow_parameters && typeof res.data.workflow_parameters === 'object'
-              ? res.data.workflow_parameters
-              : undefined,
-        });
-        return { ok: true };
-      }
-      setPipelineStatus('error');
-      setWebRtcStatusConfig(null);
-      const message = res.data?.message || 'Roboflow WebRTC tidak bisa diakses';
-      setPipelineError(message);
-      return { ok: false, message };
-    } catch (error: any) {
-      const msg = error?.response?.data?.message || error?.message || 'Roboflow WebRTC tidak bisa diakses';
-      setPipelineStatus('error');
-      setWebRtcStatusConfig(null);
-      setPipelineError(msg);
-      return { ok: false, message: msg };
-    }
-  };
-
-  const getWebRtcParams = () => {
-    const cfg = webRtcStatusConfig;
-    return {
-      workspaceName: cfg?.workspace_name || 'visa-ramadhan',
-      workflowId: cfg?.workflow_id || 'fokusdetection-vfocus-rdwkd-logic',
-      imageInputName: cfg?.image_input || 'image',
-      streamOutputNames: Array.isArray(cfg?.stream_output) && cfg.stream_output.length > 0 ? cfg.stream_output : ['output_image'],
-      dataOutputNames: Array.isArray(cfg?.data_output) && cfg.data_output.length > 0 ? cfg.data_output : [],
-      workflowsParameters:
-        cfg?.workflow_parameters && typeof cfg.workflow_parameters === 'object'
-          ? cfg.workflow_parameters
-          : undefined,
-      processingTimeout: cfg?.processing_timeout_sec || 3600,
-      requestedPlan: cfg?.requested_plan || 'webrtc-gpu-medium',
-      requestedRegion: cfg?.requested_region || 'us',
-      realtimeProcessing: true,
-    };
-  };
-
-  const normalizeDetections = (rawDetections: YoloDetection[], nowMs: number) => {
-    const normalizeLabel = (value: unknown) => String(value ?? '').trim().toLowerCase();
-    const memory = detectionMemoryRef.current;
-    const keyForDet = (d: YoloDetection) => {
-      const q = (n: number, step: number) => Math.round(n / step) * step;
-      const b = d.bbox;
-      const x = q(b.x1, 24);
-      const y = q(b.y1, 24);
-      const w = q(b.x2 - b.x1, 24);
-      const h = q(b.y2 - b.y1, 24);
-      return `${normalizeLabel(d.class_name)}:${x}:${y}:${w}:${h}`;
-    };
-
-    for (const det of rawDetections) {
-      memory.set(keyForDet(det), { det, lastSeen: nowMs });
-    }
-
-    for (const [key, value] of memory.entries()) {
-      if (nowMs - value.lastSeen > 500) {
-        memory.delete(key);
-      }
-    }
-
-    return Array.from(memory.values()).map((value) => value.det);
-  };
-
-  const extractDetectionsFromWebRtc = (payload: WebRTCOutputData): YoloDetection[] => {
-    const serialized = payload?.serialized_output_data;
-    const queue: any[] = [serialized];
-    const predictions: any[] = [];
-
-    while (queue.length > 0) {
-      const current = queue.shift();
-      if (!current) continue;
-
-      if (Array.isArray(current)) {
-        const predictionLike = current.every((item) => item && typeof item === 'object');
-        if (predictionLike) {
-          predictions.push(...current);
-        }
-        continue;
-      }
-
-      if (typeof current !== 'object') continue;
-
-      if (Array.isArray((current as any).predictions)) {
-        predictions.push(...(current as any).predictions);
-      }
-      if (Array.isArray((current as any).detection_predictions)) {
-        predictions.push(...(current as any).detection_predictions);
-      }
-
-      for (const value of Object.values(current)) {
-        if (value && typeof value === 'object') {
-          queue.push(value);
-        }
-      }
-    }
-
-    return predictions
-      .map((item: any) => {
-        const className = String(item?.class ?? item?.class_name ?? item?.name ?? item?.label ?? '').trim();
-        if (!className) return null;
-
-        const x = Number(item?.x ?? item?.bbox?.x ?? 0);
-        const y = Number(item?.y ?? item?.bbox?.y ?? 0);
-        const width = Number(item?.width ?? item?.w ?? item?.bbox?.width ?? 0);
-        const height = Number(item?.height ?? item?.h ?? item?.bbox?.height ?? 0);
-        const x1Raw = Number(item?.bbox?.x1 ?? item?.x1);
-        const y1Raw = Number(item?.bbox?.y1 ?? item?.y1);
-        const x2Raw = Number(item?.bbox?.x2 ?? item?.x2);
-        const y2Raw = Number(item?.bbox?.y2 ?? item?.y2);
-
-        const x1 = Number.isFinite(x1Raw) ? x1Raw : x - width / 2;
-        const y1 = Number.isFinite(y1Raw) ? y1Raw : y - height / 2;
-        const x2 = Number.isFinite(x2Raw) ? x2Raw : x + width / 2;
-        const y2 = Number.isFinite(y2Raw) ? y2Raw : y + height / 2;
-
-        return {
-          class_name: className,
-          confidence: Number(item?.confidence ?? 0) || 0,
-          bbox: { x1, y1, x2, y2 }
-        } as YoloDetection;
-      })
-      .filter(Boolean) as YoloDetection[];
-  };
-
-  const applyDetectionResults = async (rawDetections: YoloDetection[], sessionId: string, startTimeMs: number) => {
-    const normalizeLabel = (value: unknown) => String(value ?? '').trim().toLowerCase();
-    const nowMs = Date.now();
-    const smoothedDetections = normalizeDetections(rawDetections, nowMs);
-    setYoloDetections(smoothedDetections);
-
-    const overlayCanvas = canvasRef.current;
-    const scaleX = overlayCanvas && videoRef.current?.videoWidth ? overlayCanvas.width / videoRef.current.videoWidth : 1;
-    const scaleY = overlayCanvas && videoRef.current?.videoHeight ? overlayCanvas.height / videoRef.current.videoHeight : 1;
-
-    const scaledDetections = smoothedDetections.map(d => ({
-      ...d,
-      bbox: {
-        x1: d.bbox.x1 * scaleX,
-        y1: d.bbox.y1 * scaleY,
-        x2: d.bbox.x2 * scaleX,
-        y2: d.bbox.y2 * scaleY
-      }
+  const mapEventRows = (rows: any[]): RecordEventRow[] =>
+    rows.map((row: any) => ({
+      timestamp: String(row?.[0] ?? ''),
+      id: String(row?.[1] ?? ''),
+      label: String(row?.[2] ?? ''),
+      status: String(row?.[3] ?? ''),
+      confidence: Number(row?.[4] ?? 0),
     }));
 
-    const modelLabelSet = new Set(Object.values(modelInfo?.names ?? {}).map(normalizeLabel));
-    const behaviorLabels = [
-      'memperhatikan',
-      'focused',
-      'nguap',
-      'yawning',
-      'balikbadan',
-      'looking_away',
-      'chatting',
-      'sleeping',
-      'using_phone',
-      'writing'
-    ];
-    const hasBehaviorLabels = behaviorLabels.some(label => modelLabelSet.has(label));
-    const usePersonOnly = !hasBehaviorLabels && modelLabelSet.has('person');
-    const candidateDetections = usePersonOnly
-      ? scaledDetections.filter(d => normalizeLabel(d.class_name) === 'person')
-      : scaledDetections;
+  const mapSummaryRows = (rows: any[]): RecordSummaryRow[] =>
+    rows.map((row: any) => ({
+      id: String(row?.[0] ?? ''),
+      label: String(row?.[1] ?? ''),
+      focused: Number(row?.[2] ?? 0),
+      notFocused: Number(row?.[3] ?? 0),
+      total: Number(row?.[4] ?? 0),
+      firstSeen: String(row?.[5] ?? ''),
+      lastSeen: String(row?.[6] ?? ''),
+    }));
 
-    const focusedLabels = new Set(
-      ['memperhatikan', 'focused'].some(label => modelLabelSet.has(label))
-        ? ['memperhatikan', 'focused']
-        : modelLabelSet.has('person')
-          ? ['person']
-          : ['memperhatikan', 'focused']
-    );
-    const yawningLabels = new Set(['nguap', 'yawning']);
-    const lookingAwayLabels = new Set(['balikbadan', 'looking_away', 'chatting']);
+  const parseDownloadFilename = (contentDisposition?: string) => {
+    if (!contentDisposition) return null;
+    const utfMatch = contentDisposition.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+    if (utfMatch?.[1]) {
+      return decodeURIComponent(utfMatch[1]);
+    }
+    const basicMatch = contentDisposition.match(/filename\s*=\s*"([^"]+)"/i) || contentDisposition.match(/filename\s*=\s*([^;]+)/i);
+    if (basicMatch?.[1]) {
+      return basicMatch[1].trim();
+    }
+    return null;
+  };
 
-    let seatSnapshot: SeatPosition[] = [];
-    setSeatPositions(prev => {
-      const iou = (a: { x1: number; y1: number; x2: number; y2: number }, b: { x1: number; y1: number; x2: number; y2: number }) => {
-        const xA = Math.max(a.x1, b.x1);
-        const yA = Math.max(a.y1, b.y1);
-        const xB = Math.min(a.x2, b.x2);
-        const yB = Math.min(a.y2, b.y2);
-        const interW = Math.max(0, xB - xA);
-        const interH = Math.max(0, yB - yA);
-        const inter = interW * interH;
-        const areaA = Math.max(0, a.x2 - a.x1) * Math.max(0, a.y2 - a.y1);
-        const areaB = Math.max(0, b.x2 - b.x1) * Math.max(0, b.y2 - b.y1);
-        const denom = areaA + areaB - inter;
-        return denom > 0 ? inter / denom : 0;
-      };
+  const toDateOnly = (value: string | Date) => {
+    const date = new Date(value);
+    date.setHours(0, 0, 0, 0);
+    return date;
+  };
 
-      const closeFocusWindow = (seat: SeatPosition) => {
-        if (seat.focus_start_time) {
-          return {
-            ...seat,
-            total_focus_duration: seat.total_focus_duration + Math.max(0, nowMs - seat.focus_start_time),
-            focus_start_time: null
-          };
-        }
-        return seat;
-      };
-
-      const nextSeats = prev.map(seat => {
-        const seatBox = { x1: seat.x, y1: seat.y, x2: seat.x + seat.width, y2: seat.y + seat.height };
-        let best: YoloDetection | null = null;
-        let bestScore = 0;
-
-        for (const det of candidateDetections) {
-          const score = iou(seatBox, det.bbox);
-          if (score > bestScore) {
-            bestScore = score;
-            best = det;
-          }
-        }
-
-        if (!best || bestScore < 0.05) {
-          const seatClosed = closeFocusWindow(seat);
-          return {
-            ...seatClosed,
-            face_detected: false,
-            is_occupied: false,
-            gesture_type: 'unknown',
-            confidence: 0,
-            departure_time: seat.attendance_time ? seatClosed.departure_time || new Date().toISOString() : seatClosed.departure_time
-          };
-        }
-
-        const className = String(best.class_name || '').toLowerCase();
-        const isFocused = focusedLabels.has(normalizeLabel(className));
-        const attendance_time = seat.attendance_time || new Date().toISOString();
-
-        let updated: SeatPosition = {
-          ...seat,
-          face_detected: true,
-          is_occupied: true,
-          gesture_type: best.class_name,
-          confidence: best.confidence,
-          attendance_time,
-          departure_time: null
-        };
-
-        if (isFocused) {
-          if (!updated.focus_start_time) updated.focus_start_time = nowMs;
-        } else {
-          updated = closeFocusWindow(updated);
-        }
-
-        return updated;
-      });
-
-      seatSnapshot = nextSeats;
-      return nextSeats;
+  const formatScheduleDate = (value: string) =>
+    new Date(value).toLocaleDateString('id-ID', {
+      weekday: 'long',
+      day: '2-digit',
+      month: 'long',
+      year: 'numeric',
     });
 
-    setModelStatus('active');
-    setFlaskError('');
-    setLastInferenceMs(Math.max(0, Date.now() - startTimeMs));
+  const toMinutes = (time: string) => {
+    const [hours = '0', minutes = '0'] = String(time || '').split(':');
+    return Number(hours) * 60 + Number(minutes);
+  };
 
-    const detectionTime = new Date().toLocaleTimeString();
-    const totalDetections = smoothedDetections.length;
-    const focusedCount = smoothedDetections.filter(d => focusedLabels.has(normalizeLabel(d.class_name))).length;
-    const yawningCount = smoothedDetections.filter(d => yawningLabels.has(normalizeLabel(d.class_name))).length;
-    const chattingCount = smoothedDetections.filter(d => lookingAwayLabels.has(normalizeLabel(d.class_name))).length;
-    const notFocusedCount = Math.max(0, totalDetections - focusedCount);
-    const focusPercentage = totalDetections > 0 ? Math.round((focusedCount / totalDetections) * 100) : 0;
-    const label_counts = smoothedDetections.reduce<Record<string, number>>((acc, det) => {
-      const key = normalizeLabel(det.class_name);
-      acc[key] = (acc[key] || 0) + 1;
-      return acc;
-    }, {});
+  const getSchedulePresentation = (schedule: Schedule) => {
+    const today = toDateOnly(new Date());
+    const scheduleDate = toDateOnly(schedule.tanggal);
+    const isPast = scheduleDate.getTime() < today.getTime();
+    const isFuture = scheduleDate.getTime() > today.getTime();
 
-    const now = Date.now();
-    const intervalMs = Math.max(1000, Math.round(recordIntervalSec * 1000));
-    const shouldRecord = now - lastRecordAtRef.current >= intervalMs;
-    if (!shouldRecord) {
-      requestDraw();
+    if (schedule.status === 'cancelled') {
+      return {
+        label: 'Cancelled',
+        canSelect: false,
+        badgeClass: 'bg-red-100 text-red-700',
+        cardClass: 'border-red-100 bg-red-50 opacity-75 cursor-not-allowed',
+      };
+    }
+
+    if (schedule.status === 'completed' || isPast) {
+      return {
+        label: 'Done',
+        canSelect: false,
+        badgeClass: 'bg-emerald-100 text-emerald-700',
+        cardClass: 'border-emerald-100 bg-emerald-50 opacity-80 cursor-not-allowed',
+      };
+    }
+
+    if (isFuture) {
+      return {
+        label: 'Upcoming',
+        canSelect: false,
+        badgeClass: 'bg-slate-100 text-slate-600',
+        cardClass: 'border-slate-200 bg-slate-50 opacity-50 cursor-not-allowed',
+      };
+    }
+
+    if (schedule.status === 'ongoing') {
+      return {
+        label: 'Ongoing',
+        canSelect: true,
+        badgeClass: 'bg-amber-100 text-amber-700',
+        cardClass: 'border-amber-200 bg-amber-50',
+      };
+    }
+
+    return {
+      label: 'Scheduled',
+      canSelect: true,
+      badgeClass: 'bg-blue-100 text-blue-700',
+      cardClass: 'border-blue-200 bg-blue-50',
+    };
+  };
+
+  // Fetch initial data
+  useEffect(() => {
+    if (user?.role === 'admin') {
+      fetchDosen();
+    } else {
+      if (user) {
+        setSelectedDosenId(user.id);
+      }
+    }
+  }, [user?.role, user?.id]);
+
+  useEffect(() => {
+    void loadCameras();
+    return () => {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if ((user?.role === 'admin' && selectedDosenId) || user?.role === 'dosen') {
+      fetchAvailableKelas();
+    } else if (user?.role === 'admin') {
+      setAvailableKelas([]);
+      setSelectedKelas('');
+      setSelectedScheduleId('');
+      setSchedules([]);
+    }
+  }, [user?.role, user?.id, selectedDosenId]);
+
+  // Fetch schedules when dependencies change
+  useEffect(() => {
+    if (selectedDosenId && selectedKelas) {
+      fetchSchedules();
+    } else {
+      setSchedules([]);
+      setSelectedScheduleId('');
+    }
+  }, [selectedDosenId, selectedKelas]);
+
+  useEffect(() => {
+    if (!isMonitoring) {
+      setAnnotatedImage('');
+      setAnalyzeMetrics(null);
+      setIsVideoReady(false);
       return;
     }
 
-    lastRecordAtRef.current = now;
-    const seatsForRecord = seatSnapshot.length > 0 ? seatSnapshot : seatPositions;
-    const newDetectionData: DetectionData = {
-      timestamp: detectionTime,
-      totalDetections,
-      focusedCount,
-      notFocusedCount,
-      sleepingCount: 0,
-      phoneUsingCount: 0,
-      chattingCount,
-      yawningCount,
-      writingCount: 0,
-      focusPercentage,
-      label_counts,
-      seatData: seatsForRecord
-    };
-
-    setDetectionData(prev => [...prev.slice(-119), newDetectionData]);
-
-    const elapsedSeconds = startTimeMs ? Math.max(0, Math.floor((now - startTimeMs) / 1000)) : 0;
-    const summaryParts = [
-      `fokus ${focusedCount}`,
-      `tidak ${notFocusedCount}`,
-      yawningCount > 0 ? `nguap ${yawningCount}` : null,
-      chattingCount > 0 ? `balikbadan ${chattingCount}` : null
-    ].filter(Boolean);
-
-    const record: DetectionRecord = {
-      id: `${now}-${Math.random().toString(16).slice(2)}`,
-      timestamp: detectionTime,
-      elapsedTime: formatElapsed(elapsedSeconds),
-      totalDetections,
-      focusedCount,
-      notFocusedCount,
-      yawningCount,
-      chattingCount,
-      focusPercentage,
-      summary: summaryParts.join(' • ')
-    };
-
-    setDetectionRecords(prev => [record, ...prev].slice(0, 200));
-
-    if (now - lastBackendSaveAtRef.current >= intervalMs && currentSession?.sessionId === sessionId) {
-      lastBackendSaveAtRef.current = now;
-      const seat_data = seatsForRecord.map(seat => ({
-        seat_id: String(seat.seat_id),
-        student_id: seat.student_id || null,
-        is_focused: focusedLabels.has(normalizeLabel(seat.gesture_type)),
-        is_occupied: seat.is_occupied,
-        attendance_time: seat.attendance_time,
-        departure_time: seat.departure_time
-      }));
-
+    let alive = true;
+    const fetchRecordStatus = async () => {
       try {
-        await axios.post(`/api/live-monitoring/detection/${sessionId}`, {
-          totalDetections,
-          focusedCount,
-          notFocusedCount,
-          sleepingCount: 0,
-          phoneUsingCount: 0,
-          chattingCount,
-          yawningCount,
-          writingCount: 0,
-          focusPercentage,
-          record_interval_ms: intervalMs,
-          total_seats: seatsForRecord.length,
-          seat_data
-        });
-      } catch (error: any) {
-        const status = error?.response?.status;
-        const msg = error?.response?.data?.message || error?.message || 'Unknown error';
-        console.error('Failed to save detection data to backend:', status ? `[${status}] ${msg}` : msg);
-      }
-    }
-
-    requestDraw();
-  };
-
-  const buildPipelineResultFromSeats = () => {
-    const results = Object.fromEntries(
-      seatPositions.map(seat => {
-        const focused = ['memperhatikan', 'focused', 'person'].includes(String(seat.gesture_type || '').trim().toLowerCase());
-        return [
-          String(seat.seat_id),
-          {
-            fokus: focused ? 1 : 0,
-            tidak_fokus: focused ? 0 : 1,
-            focused
-          }
-        ];
-      })
-    );
-
-    const totalSeats = seatPositions.length;
-    const focusedCount = Object.values(results).filter((item: any) => item.focused).length;
-    const focusRate = totalSeats > 0 ? Math.round((focusedCount / totalSeats) * 100) : 0;
-
-    return {
-      seat_results: results,
-      summary: {
-        fokus: focusRate,
-        tidak_fokus: Math.max(0, 100 - focusRate),
-        fokus_count: focusedCount,
-        tidak_fokus_count: Math.max(0, totalSeats - focusedCount),
-        jumlah_hadir: totalSeats
+        const response = await axios.get('/api/ai-service/focus/record/status');
+        if (!alive) return;
+        setRecordStatusText(String(response.data?.status || ''));
+        const rows = Array.isArray(response.data?.events) ? response.data.events : [];
+        const summaryRows = Array.isArray(response.data?.summary) ? response.data.summary : [];
+        setRecordEvents(mapEventRows(rows));
+        setRecordSummary(mapSummaryRows(summaryRows));
+      } catch (err) {
+        if (!alive) return;
+        console.error('Error fetching recording status:', err);
       }
     };
-  };
 
-  const createWebRtcConnector = (): Connector => {
-    const token = localStorage.getItem('token');
-    const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
-
-    return {
-      connectWrtc: async (offer, wrtcParams) => {
-        const response = await fetch('/api/roboflow/webrtc/init', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...authHeaders,
-          },
-          body: JSON.stringify({ offer, wrtcParams }),
-        });
-
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) {
-          const blockMessage = Array.isArray(data?.blocks_errors)
-            ? data.blocks_errors
-                .map((item: any) => item?.property_details || item?.block_details || item?.block_id)
-                .filter(Boolean)
-                .join(' | ')
-            : '';
-          const message = [data?.message, data?.inner_error_message, blockMessage]
-            .filter(Boolean)
-            .join(' | ');
-          throw new Error(message || 'Gagal menginisialisasi Roboflow WebRTC.');
-        }
-        return data;
-      },
-      getIceServers: async () => {
-        const response = await fetch('/api/roboflow/webrtc/turn-config', {
-          headers: authHeaders,
-        });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) {
-          throw new Error(data?.message || 'Gagal mengambil TURN config.');
-        }
-        return Array.isArray(data?.iceServers) ? data.iceServers : [];
-      }
+    void fetchRecordStatus();
+    const timer = window.setInterval(fetchRecordStatus, 3000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
     };
-  };
-
-  const stopWebRtcPipeline = async () => {
-    const connection = webrtcConnectionRef.current;
-    webrtcConnectionRef.current = null;
-
-    if (connection) {
-      await connection.cleanup().catch(() => {});
-    }
-
-    if (cameraStream) {
-      await attachStreamToVideo(cameraStream);
-    }
-
-    setPipelineRunnerState('stopped');
-    setPipelineError('');
-    setPipelineStatus('connected');
-
-    return buildPipelineResultFromSeats();
-  };
-
-  const startWebRtcPipeline = async (sessionId: string) => {
-    if (!cameraStream) {
-      await startCamera();
-    }
-
-    const sourceStream = cameraStream || videoRef.current?.srcObject;
-    if (!(sourceStream instanceof MediaStream)) {
-      throw new Error('Kamera belum siap untuk Roboflow WebRTC.');
-    }
-
-    if (webrtcConnectionRef.current) {
-      await stopWebRtcPipeline();
-    }
-
-    const connector = createWebRtcConnector();
-    setPipelineRunnerState('connecting');
-    setPipelineError('');
-    setPipelineStatus('connected');
-    setModelStatus('loading');
-
-    const connection = await webrtc.useStream({
-      source: sourceStream,
-      connector,
-      wrtcParams: getWebRtcParams(),
-      onData: (payload) => {
-        if (payload?.errors?.length) {
-          const message = payload.errors.join(', ');
-          setPipelineStatus('error');
-          setPipelineRunnerState('error');
-          setPipelineError(message);
-          setModelStatus('error');
-          return;
-        }
-
-        const detections = extractDetectionsFromWebRtc(payload);
-        const startedAt = sessionStartTimeRef.current || Date.now();
-        void applyDetectionResults(detections, sessionId, startedAt);
-      }
-    });
-
-    webrtcConnectionRef.current = connection;
-    const remoteStream = await connection.remoteStream();
-    await attachStreamToVideo(remoteStream);
-    setPipelineRunnerState('running');
-    setModelStatus('active');
-  };
-
-  useEffect(() => {
-    if (!useInferencePipeline) return;
-    checkPipelineStatus();
-  }, [useInferencePipeline]);
-
-  useEffect(() => {
-    const fetchDosen = async () => {
-      if (user?.role !== 'admin') return;
-      try {
-        const res = await axios.get('/api/users');
-        const dosen = (res.data || []).filter((u: UserOption) => u.role === 'dosen');
-        setDosenOptions(dosen);
-      } catch (error) {
-        showError('Gagal', 'Gagal memuat data dosen.');
-      }
-    };
-    fetchDosen();
-  }, [user?.role]);
-
-  useEffect(() => {
-    const fetchSubjects = async () => {
-      try {
-        setLoadingSubjects(true);
-        if (user?.role === 'admin' && !selectedDosenId) {
-          setSubjects([]);
-          setSelectedSubjectId('');
-          setSelectedClassName('');
-          setSelectedSchedule('');
-          return;
-        }
-        const params: any = {};
-        if (user?.role === 'admin' && selectedDosenId) {
-          params.dosen_id = selectedDosenId;
-        }
-        const res = await axios.get('/api/mata-kuliah', { params });
-        setSubjects(res.data || []);
-      } catch (error) {
-        showError('Gagal', 'Gagal mengambil data mata kuliah.');
-      } finally {
-        setLoadingSubjects(false);
-      }
-    };
-    if (user?.role) {
-      fetchSubjects();
-    }
-  }, [user?.role, selectedDosenId]);
-
-  useEffect(() => {
-    if (isMonitoring) {
-      syncCanvasSize();
-      window.addEventListener('resize', syncCanvasSize);
-      return () => window.removeEventListener('resize', syncCanvasSize);
-    }
   }, [isMonitoring]);
 
-  // Data Fetching Functions
-  const getCameraDevices = async () => {
-    try {
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const videoDevices = devices
-        .filter(device => device.kind === 'videoinput')
-        .map(device => ({
-          deviceId: device.deviceId,
-          label: device.label || `Camera ${device.deviceId.slice(0, 8)}`
-        }));
-      setCameras(videoDevices);
-      if (videoDevices.length > 0) {
-        setSelectedCamera(videoDevices[0].deviceId);
+  useEffect(() => {
+    if (videoRef.current) {
+      setIsVideoReady(false);
+      videoRef.current.srcObject = cameraStream;
+      if (cameraStream) {
+        const playVideo = async () => {
+          try {
+            await videoRef.current?.play();
+          } catch (error) {
+            console.error('Error playing video stream:', error);
+          }
+        };
+        void playVideo();
       }
-    } catch (error) {
-      showError('Gagal', 'Gagal mengambil daftar kamera.');
-      console.error('Camera enumeration error:', error);
+    }
+    streamRef.current = cameraStream;
+  }, [cameraStream, isMonitoring]);
+
+  useEffect(() => {
+    if (!isMonitoring || !cameraStream || !isVideoReady) {
+      if (analyzeIntervalRef.current) {
+        window.clearInterval(analyzeIntervalRef.current);
+        analyzeIntervalRef.current = null;
+      }
+      return;
+    }
+
+    const run = () => {
+      void analyzeCurrentFrame();
+    };
+
+    run();
+    analyzeIntervalRef.current = window.setInterval(run, 1500);
+
+    return () => {
+      if (analyzeIntervalRef.current) {
+        window.clearInterval(analyzeIntervalRef.current);
+        analyzeIntervalRef.current = null;
+      }
+    };
+  }, [isMonitoring, cameraStream, isVideoReady]);
+
+  const fetchDosen = async () => {
+    try {
+      const res = await axios.get('/api/users');
+      const dosenList = (res.data || []).filter((u: UserOption) => u.role === 'dosen');
+      setDosenOptions(dosenList);
+    } catch (err) {
+      console.error('Error fetching dosen:', err);
+    }
+  };
+
+  const fetchAvailableKelas = async () => {
+    try {
+      const params: any = {};
+      if (user?.role === 'admin' && selectedDosenId) {
+        params.dosen_id = selectedDosenId;
+      } else if (user?.role === 'dosen') {
+        params.dosen_id = user.id;
+      }
+
+      const scheduleRes = await axios.get('/api/jadwal', { params });
+      const scheduleList = Array.isArray(scheduleRes.data) ? scheduleRes.data : [];
+      const kelasSet = new Set<string>();
+      scheduleList.forEach((schedule: Schedule) => {
+        if (schedule?.kelas) {
+          kelasSet.add(schedule.kelas);
+        }
+      });
+
+      setAvailableKelas(Array.from(kelasSet).sort());
+    } catch (err) {
+      console.error('Error fetching data:', err);
     }
   };
 
   const fetchSchedules = async () => {
     try {
-      if (user?.role === 'admin' && !selectedDosenId) {
-        setSchedules([]);
-        return;
-      }
-      if (!selectedSubjectId || !selectedClassName) {
-        setSchedules([]);
-        return;
-      }
       const params: any = {
-        status: 'available',
-        date: todayStr(),
-        mata_kuliah_id: selectedSubjectId,
-        kelas: selectedClassName
+        kelas: selectedKelas,
       };
-      if (user?.role === 'admin' && selectedDosenId) {
+      if (selectedDosenId) {
         params.dosen_id = selectedDosenId;
       }
-      const response = await axios.get('/api/jadwal', { params });
-      setSchedules(response.data || []);
-    } catch (error) {
-      console.error('Error fetching schedules:', error);
-      showError('Gagal', 'Gagal mengambil data schedule.');
-    }
-  };
 
-  useEffect(() => {
-    if (user?.role) {
-      fetchSchedules();
-    }
-  }, [user?.role, selectedDosenId, selectedSubjectId, selectedClassName]);
-
-  const fetchModels = async () => {
-    try {
-      const response = await axios.get('/api/models/list');
-      setModels(response.data);
-      // No need to set selectedModel as we're using detection_model_type instead
-    } catch (error) {
-      console.error('Error fetching models:', error);
-      showError('Gagal', 'Gagal mengambil daftar model.');
-    }
-  };
-
-  const checkFlaskStatus = async () => {
-    if (useInferencePipeline) {
-      setFlaskStatus('disconnected');
-      setModelStatus('inactive');
-      setFlaskError('');
-      return;
-    }
-    try {
-      await axios.get('/api/roboflow-model/status', { timeout: 5000 });
-      setFlaskStatus('connected');
-      setFlaskError('');
-
-      setModelStatus('loading');
-      try {
-        const infoResponse = await axios.get('/api/roboflow-model/model-info');
-        if (infoResponse.data?.success) {
-          setModelInfo({
-            names: infoResponse.data.names || {},
-            num_classes: infoResponse.data.num_classes || 0
-          });
-          setModelStatus('active');
-          setFlaskError('');
-        } else {
-          setModelStatus('inactive');
-          setFlaskError(infoResponse.data?.message || 'Model info Roboflow belum tersedia');
-        }
-      } catch (infoError: any) {
-        setModelStatus('inactive');
-        const msg = infoError?.response?.data?.message || infoError?.message || 'Gagal mengambil model info Roboflow';
-        setFlaskError(msg);
-        console.error('Error getting Roboflow model info:', infoError);
-      }
-    } catch (error) {
-      setFlaskStatus('error');
-      setFlaskError('FastAPI/Roboflow proxy belum siap. Pastikan FastAPI berjalan dan backend dapat mengaksesnya.');
-      console.error('Roboflow status check failed:', error);
-    }
-  };
-
-  // Camera Functions
-  const startCamera = async () => {
-    try {
-      if (cameraStream) {
-        cameraStream.getTracks().forEach(track => track.stop());
-      }
-
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          deviceId: selectedCamera ? { exact: selectedCamera } : undefined,
-          width: 1920,
-          height: 1080
-        },
-        audio: false
+      const res = await axios.get('/api/jadwal', { params });
+      const scheduleList = Array.isArray(res.data) ? res.data : [];
+      scheduleList.sort((a: Schedule, b: Schedule) => {
+        const dateDiff = toDateOnly(a.tanggal).getTime() - toDateOnly(b.tanggal).getTime();
+        if (dateDiff !== 0) return dateDiff;
+        return toMinutes(a.jam_mulai) - toMinutes(b.jam_mulai);
       });
+      setSchedules(scheduleList);
+    } catch (err) {
+      console.error('Error fetching schedules:', err);
+      showError('Gagal', 'Gagal memuat jadwal');
+    }
+  };
 
+  const loadCameras = async () => {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const nextCameras = devices
+        .filter((device) => device.kind === 'videoinput')
+        .map((device, index) => ({
+          deviceId: device.deviceId,
+          label: device.label || `Camera ${index + 1}`,
+        }));
+      setCameras(nextCameras);
+      if (!selectedCameraId && nextCameras.length > 0) {
+        setSelectedCameraId(nextCameras[0].deviceId);
+      }
+    } catch (err) {
+      console.error('Error loading cameras:', err);
+    }
+  };
+
+  const stopCameraStream = () => {
+    if (analyzeIntervalRef.current) {
+      window.clearInterval(analyzeIntervalRef.current);
+      analyzeIntervalRef.current = null;
+    }
+    if (cameraStream) {
+      cameraStream.getTracks().forEach((track) => track.stop());
+    }
+    setCameraStream(null);
+    setAnnotatedImage('');
+    setAnalyzeMetrics(null);
+    setIsVideoReady(false);
+  };
+
+  const openCamera = async () => {
+    try {
+      setIsCameraLoading(true);
+      stopCameraStream();
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: selectedCameraId ? { deviceId: { exact: selectedCameraId } } : true,
+        audio: false,
+      });
       setCameraStream(stream);
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play().catch(() => {});
-        requestAnimationFrame(() => {
-          syncCanvasSize();
+      await loadCameras();
+      showSuccess('Berhasil', 'Kamera aktif.');
+    } catch (err: any) {
+      console.error('Error opening camera:', err);
+      showError('Gagal', 'Tidak bisa membuka kamera.');
+    } finally {
+      setIsCameraLoading(false);
+    }
+  };
+
+  const analyzeCurrentFrame = async () => {
+    if (isAnalyzingRef.current) return;
+    if (!videoRef.current || !captureCanvasRef.current) return;
+    if (!cameraStream) return;
+
+    const video = videoRef.current;
+    const canvas = captureCanvasRef.current;
+    if (!video.videoWidth || !video.videoHeight) return;
+
+    isAnalyzingRef.current = true;
+    try {
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const imageBase64 = canvas.toDataURL('image/jpeg', 0.8);
+      const response = await axios.post('/api/ai-service/focus/analyze-frame', {
+        image_base64: imageBase64,
+        use_trained: true,
+      });
+      setAnnotatedImage(String(response.data?.annotated_image_base64 || ''));
+      const metrics = (response.data?.metrics || null) as AnalyzeMetrics | null;
+      setAnalyzeMetrics(metrics);
+      if (isMonitoring && metrics?.people && metrics.people.length > 0) {
+        const timestamp = formatNow();
+        const nextEvents = metrics.people.map((person, index) => ({
+          timestamp,
+          id: String(person?.id ?? `person-${index + 1}`),
+          label: String(person?.label ?? `Person ${index + 1}`),
+          status: String(person?.status ?? ''),
+          confidence: Number(person?.confidence ?? 0),
+        }));
+        setRecordEvents((prev) => {
+          const merged = [...prev, ...nextEvents];
+          const nextTotal = merged.length;
+          setRecordStatusText((prevStatus) => {
+            if (prevStatus && prevStatus.includes('Total event:')) {
+              return prevStatus.replace(/Total event:\s*\d+/, `Total event: ${nextTotal}`);
+            }
+            return `Recording aktif | Mulai: ${timestamp} | Selesai: berjalan | Total event: ${nextTotal}`;
+          });
+          return merged.slice(-100);
         });
       }
-      showSuccess('Berhasil', 'Kamera berhasil dimulai.');
-    } catch (error) {
-      showError('Gagal', 'Gagal memulai kamera.');
-      console.error('Camera start error:', error);
+    } catch (err) {
+      console.error('Error analyzing frame:', err);
+    } finally {
+      isAnalyzingRef.current = false;
     }
   };
 
-  const stopCamera = () => {
-    if (cameraStream) {
-      cameraStream.getTracks().forEach(track => track.stop());
-      setCameraStream(null);
-    }
-    showSuccess('Berhasil', 'Kamera dihentikan.');
-  };
-
-  // Seat Labelling Functions
-  const handleCanvasMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!isLabellingMode || !cameraStream) return;
-
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-
-    setIsDrawing(true);
-    setCurrentSeat({
-      seat_id: seatPositions.length + 1,
-      x,
-      y,
-      width: 0,
-      height: 0,
-      is_occupied: false,
-      student_id: null,
-      face_detected: false,
-      gesture_type: 'unknown',
-      confidence: 0,
-      focus_start_time: null,
-      total_focus_duration: 0,
-      attendance_time: null,
-      departure_time: null
-    });
-  };
-
-  const handleCanvasMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!isDrawing || !currentSeat || !isLabellingMode) return;
-
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const rect = canvas.getBoundingClientRect();
-    const currentX = e.clientX - rect.left;
-    const currentY = e.clientY - rect.top;
-
-    // Update current seat dimensions
-    setCurrentSeat({
-      ...currentSeat,
-      width: currentX - (currentSeat.x || 0),
-      height: currentY - (currentSeat.y || 0)
-    });
-
-    // Force immediate redraw to show the current drawing state
-    // This ensures the drawing is visible during drag
-    const ctx = canvas.getContext('2d');
-    if (ctx && currentSeat) {
-      // First draw all existing seats
-      drawCanvas();
-      
-      // Then draw the current seat being created with high visibility
-      ctx.strokeStyle = '#FF0000';
-      ctx.lineWidth = 3;
-      ctx.setLineDash([5, 5]);
-      ctx.strokeRect(
-        currentSeat.x || 0,
-        currentSeat.y || 0,
-        currentX - (currentSeat.x || 0),
-        currentY - (currentSeat.y || 0)
-      );
-    }
-  };
-
-  const handleCanvasMouseUp = (e?: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!isDrawing || !currentSeat || !isLabellingMode) return;
-
-    const width = Math.abs(currentSeat.width || 0);
-    const height = Math.abs(currentSeat.height || 0);
-    if (width < 1 || height < 1) {
-      setIsDrawing(false);
-      setCurrentSeat(null);
-      drawCanvas();
-      return;
-    }
-
-    let x = currentSeat.x || 0;
-    let y = currentSeat.y || 0;
-
-    if ((currentSeat.width || 0) < 0) {
-      x += (currentSeat.width || 0);
-    }
-
-    if ((currentSeat.height || 0) < 0) {
-      y += (currentSeat.height || 0);
-    }
-
-    const newSeat: SeatPosition = {
-      seat_id: seatPositions.length + 1,
-      x,
-      y,
-      width,
-      height,
-      is_occupied: false,
-      student_id: null,
-      face_detected: false,
-      gesture_type: 'unknown',
-      confidence: 0,
-      focus_start_time: null,
-      total_focus_duration: 0,
-      attendance_time: null,
-      departure_time: null
-    };
-
-    setSeatPositions([...seatPositions, newSeat]);
-    showSuccess('Berhasil', `Seat ${newSeat.seat_id} ditambahkan.`);
-
-    // Reset drawing state
-    setIsDrawing(false);
-    setCurrentSeat(null);
-    
-    // Force redraw to clear any temporary drawing
-    drawCanvas();
-  };
-
-  const generateGridSeats = () => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    // Ensure we have camera stream before generating grid
-    if (!cameraStream) {
-      showError('Tidak Bisa', 'Mulai kamera terlebih dahulu.');
-      return;
-    }
-
-    // Calculate grid based on canvas size for better fit
-    const canvasWidth = canvas.width;
-    const canvasHeight = canvas.height;
-    
-    console.log('Generating grid on canvas:', canvasWidth, 'x', canvasHeight);
-    
-    // Determine grid size based on dropdown selection
-    let rows, cols;
-    if (gridSize === 'small') {
-      rows = 2;
-      cols = 2;
-    } else if (gridSize === 'medium') {
-      rows = 3;
-      cols = 3;
-    } else {
-      rows = 4;
-      cols = 4;
-    }
-    
-    // Calculate seat dimensions to fit canvas with better visibility
-    // Use larger padding for better visibility
-    const padding = 30; // Increased padding
-    const seatWidth = Math.floor((canvasWidth - (cols + 1) * padding) / cols);
-    const seatHeight = Math.floor((canvasHeight - (rows + 1) * padding) / rows);
-    
-    const newSeats: SeatPosition[] = [];
-    let seatId = 1;
-
-    for (let row = 0; row < rows; row++) {
-      for (let col = 0; col < cols; col++) {
-        if (seatId <= totalSeats) {
-          // Calculate position with padding
-          const x = col * (seatWidth + padding) + padding;
-          const y = row * (seatHeight + padding) + padding;
-          
-          newSeats.push({
-            seat_id: seatId,
-            x,
-            y,
-            width: seatWidth,
-            height: seatHeight,
-            is_occupied: false,
-            student_id: `Student-${seatId}`,
-            face_detected: false,
-            gesture_type: 'unknown',
-            confidence: 0,
-            focus_start_time: null,
-            total_focus_duration: 0,
-            attendance_time: null,
-            departure_time: null
-          });
-          seatId++;
-        }
-      }
-    }
-
-    setSeatPositions(newSeats);
-    showSuccess('Berhasil', `Berhasil generate ${newSeats.length} seat (${rows}x${cols}).`);
-    
-    // Force redraw canvas to show the grid
-    requestDraw();
-    
-    // Hosted polling mode still needs a local capture loop after grid changes.
-    if (isMonitoring && !isLabellingMode && currentSession?.sessionId && !useInferencePipeline) {
-      startFlaskDetection(currentSession.sessionId);
-    }
-  };
-
-  const clearAllSeats = () => {
-    setSeatPositions([]);
-    showSuccess('Berhasil', 'Semua seat berhasil dihapus.');
-  };
-
-  // Canvas Drawing
-  const requestDraw = () => {
-    if (requestDrawRef.current !== null) return;
-    requestDrawRef.current = requestAnimationFrame(() => {
-      requestDrawRef.current = null;
-      drawCanvas();
-    });
-  };
-
-  const drawCanvas = () => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    // Clear the canvas
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    
-    // Draw grid background for better visibility in labelling mode
-    if (isLabellingMode) {
-      // Draw light grid lines for reference
-      ctx.strokeStyle = 'rgba(200, 200, 200, 0.5)';
-      ctx.lineWidth = 1;
-      
-      // Draw vertical grid lines
-      const gridSize = 50; // Size of grid cells
-      for (let x = 0; x < canvas.width; x += gridSize) {
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, canvas.height);
-        ctx.stroke();
-      }
-      
-      // Draw horizontal grid lines
-      for (let y = 0; y < canvas.height; y += gridSize) {
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(canvas.width, y);
-        ctx.stroke();
-      }
-    }
-
-    // Draw existing seats
-    seatPositions.forEach((seat) => {
-      let strokeColor = '#3B82F6'; // Default blue
-      let fillColor = 'rgba(59, 130, 246, 0.2)'; // Slightly more visible
-      
-      if (seat.face_detected && (seat.gesture_type === 'focused' || seat.gesture_type === 'memperhatikan')) {
-        strokeColor = '#10B981'; // Green for focused
-        fillColor = 'rgba(16, 185, 129, 0.3)';
-      } else if (seat.face_detected && seat.gesture_type !== 'focused' && seat.gesture_type !== 'memperhatikan') {
-        strokeColor = '#F59E0B'; // Orange for detected but not focused
-        fillColor = 'rgba(245, 158, 11, 0.3)';
-      } else if (seat.is_occupied) {
-        strokeColor = '#EF4444'; // Red for occupied but no face
-        fillColor = 'rgba(239, 68, 68, 0.3)';
-      }
-
-      ctx.strokeStyle = strokeColor;
-      ctx.fillStyle = fillColor;
-      ctx.lineWidth = 2;
-      ctx.fillRect(seat.x, seat.y, seat.width, seat.height);
-      ctx.strokeRect(seat.x, seat.y, seat.width, seat.height);
-      
-      // Draw seat label
-      ctx.fillStyle = strokeColor;
-      ctx.font = 'bold 14px Arial'; // Bolder and larger font
-      ctx.fillText(`S${seat.seat_id}`, seat.x + 5, seat.y + 18);
-      
-      // Draw gesture type
-      if (seat.gesture_type && seat.gesture_type !== 'unknown') {
-        ctx.fillStyle = strokeColor;
-        ctx.font = '12px Arial';
-        ctx.fillText(seat.gesture_type, seat.x + 5, seat.y + 36);
-      }
-      
-      // Draw focus duration if available
-      if (seat.total_focus_duration > 0) {
-        const minutes = Math.floor(seat.total_focus_duration / 60000);
-        const seconds = Math.floor((seat.total_focus_duration % 60000) / 1000);
-        ctx.fillText(`${minutes}:${seconds.toString().padStart(2, '0')}`, seat.x + 5, seat.y + seat.height - 8);
-      }
-    });
-
-    if (isMonitoring && yoloDetections.length > 0) {
-      for (const det of yoloDetections) {
-        const label = String(det.class_name || '');
-        const norm = label.trim().toLowerCase();
-        const color =
-          norm === 'memperhatikan' || norm === 'focused'
-            ? '#22c55e'
-            : norm === 'nguap' || norm === 'yawning'
-              ? '#f59e0b'
-              : norm === 'balikbadan' || norm === 'looking_away' || norm === 'chatting'
-                ? '#ef4444'
-                : '#3b82f6';
-
-        const x1 = det.bbox.x1;
-        const y1 = det.bbox.y1;
-        const w = det.bbox.x2 - det.bbox.x1;
-        const h = det.bbox.y2 - det.bbox.y1;
-
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 2;
-        ctx.strokeRect(x1, y1, w, h);
-
-        const pct = Math.round((det.confidence || 0) * 100);
-        const text = `${label} ${pct}%`;
-        ctx.font = 'bold 13px Arial';
-        const tw = ctx.measureText(text).width;
-        ctx.fillStyle = color;
-        ctx.fillRect(x1, y1 - 20, tw + 8, 20);
-        ctx.fillStyle = '#000000';
-        ctx.fillText(text, x1 + 4, y1 - 5);
-      }
-    }
-
-    // Draw current drawing seat with improved visibility
-    if (isDrawing && currentSeat && isLabellingMode) {
-      // Use a more visible color and thicker line
-      ctx.strokeStyle = '#FF0000'; // Bright red
-      ctx.lineWidth = 4; // Thicker line
-      ctx.setLineDash([8, 4]); // More visible dash pattern
-      
-      // Draw the rectangle
-      ctx.strokeRect(
-        currentSeat.x || 0,
-        currentSeat.y || 0,
-        currentSeat.width || 0,
-        currentSeat.height || 0
-      );
-      
-      // Draw handles at corners for better visibility
-      const handleSize = 8;
-      ctx.fillStyle = '#FFFFFF';
-      ctx.fillRect((currentSeat.x || 0) - handleSize/2, (currentSeat.y || 0) - handleSize/2, handleSize, handleSize);
-      ctx.fillRect((currentSeat.x || 0) + (currentSeat.width || 0) - handleSize/2, (currentSeat.y || 0) - handleSize/2, handleSize, handleSize);
-      ctx.fillRect((currentSeat.x || 0) - handleSize/2, (currentSeat.y || 0) + (currentSeat.height || 0) - handleSize/2, handleSize, handleSize);
-      ctx.fillRect((currentSeat.x || 0) + (currentSeat.width || 0) - handleSize/2, (currentSeat.y || 0) + (currentSeat.height || 0) - handleSize/2, handleSize, handleSize);
-      
-      ctx.setLineDash([]); // Reset dash pattern
-      
-      // Draw more visible label indicators at corners
-      const x = currentSeat.x || 0;
-      const y = currentSeat.y || 0;
-      const w = currentSeat.width || 0;
-      const h = currentSeat.height || 0;
-      
-      // Draw corner markers with larger size for better visibility
-      ctx.fillStyle = '#FF0000';
-      ctx.fillRect(x - 5, y - 5, 10, 10);
-      ctx.fillRect(x + w - 5, y - 5, 10, 10);
-      ctx.fillRect(x - 5, y + h - 5, 10, 10);
-      ctx.fillRect(x + w - 5, y + h - 5, 10, 10);
-    }
-  };
-
-  const syncCanvasSize = () => {
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-
-    if (video && canvas) {
-      const rect = video.getBoundingClientRect();
-      canvas.width = rect.width;
-      canvas.height = rect.height;
-      
-      // Ensure canvas is properly sized and positioned
-      canvas.style.width = `${rect.width}px`;
-      canvas.style.height = `${rect.height}px`;
-      canvas.style.position = 'absolute';
-      canvas.style.top = '0';
-      canvas.style.left = '0';
-      canvas.style.zIndex = '10'; // Ensure canvas is above video
-      canvas.style.pointerEvents = isLabellingMode || isDrawing ? 'auto' : 'none';
-      
-      requestDraw();
-    }
-  };
-
-  useEffect(() => {
-    if (cameraStream) {
-      syncCanvasSize();
-    }
-  }, [cameraStream]);
-
-  useEffect(() => {
-    if (cameraStream) {
-      requestDraw();
-    }
-  }, [cameraStream, seatPositions, currentSeat, isDrawing, isLabellingMode, isMonitoring, yoloDetections]);
-  
-  // Add effect to handle window resize for responsive canvas
-  useEffect(() => {
-    window.addEventListener('resize', syncCanvasSize);
-    return () => window.removeEventListener('resize', syncCanvasSize);
-  }, []);
-
-  // Monitoring Functions
   const startMonitoring = async () => {
-    if (!selectedSchedule) {
-      showError('Tidak Bisa Mulai', 'Pilih schedule terlebih dahulu.');
+    if (!selectedScheduleId) {
+      showError('Gagal', 'Pilih jadwal terlebih dahulu');
+      return;
+    }
+    if (!cameraStream) {
+      showError('Gagal', 'Buka kamera terlebih dahulu.');
       return;
     }
 
     try {
-      if (!cameraStream) {
-        await startCamera();
-      }
-
-      const schedule = schedules.find(s => s._id === selectedSchedule);
+      // Get schedule
+      const schedule = schedules.find(s => s._id === selectedScheduleId);
       if (!schedule) {
-        showError('Tidak Bisa Mulai', 'Schedule tidak ditemukan.');
+        showError('Gagal', 'Jadwal tidak ditemukan');
+        return;
+      }
+      if (!getSchedulePresentation(schedule).canSelect) {
+        showError('Gagal', 'Hanya jadwal hari ini yang bisa dipilih untuk monitoring');
         return;
       }
       setActiveSchedule(schedule);
-      if (!isToday(schedule.tanggal)) {
-        showError('Tidak Bisa Mulai', 'Schedule hanya bisa dilakukan pada tanggal yang dijadwalkan.');
-        return;
-      }
-      if (user?.role === 'admin' && !selectedDosenId) {
-        showError('Tidak Bisa Mulai', 'Pilih dosen pengampu terlebih dahulu.');
-        return;
-      }
 
-      await axios.put(`/api/jadwal/${selectedSchedule}`, { status: 'ongoing' });
-      await fetchSchedules();
+      // Update schedule status to ongoing
+      await axios.put(`/api/jadwal/${selectedScheduleId}`, { status: 'ongoing' });
 
-      const toId = (value: any) => (typeof value === 'string' ? value : value?._id);
-
-      const response = await axios.post('/api/live-monitoring/start', {
-        jadwal_id: selectedSchedule,
+      // Start session
+      const sessionRes = await axios.post('/api/live-monitoring/start', {
+        jadwal_id: selectedScheduleId,
         kelas: schedule.kelas,
-        kelas_id: toId((schedule as any).kelas_id),
-        mata_kuliah_id: toId(schedule.mata_kuliah_id) || schedule.mata_kuliah_id,
         mata_kuliah: schedule.mata_kuliah,
-        sessionName: sessionName || `${schedule.mata_kuliah} - ${schedule.kelas}`,
-        ...(user?.role === 'admin' ? { dosen_id: selectedDosenId } : {})
+        dosen_id: selectedDosenId
       });
 
-      const startedAt = Date.now();
-      setCurrentSession(response.data);
-      setIsMonitoring(true);
-      isMonitoringRef.current = true;
-      setIsLabellingMode(false);
-      setDetectionData([]);
-      setDetectionRecords([]);
-      setAnnotatedImage('');
-      setYoloDetections([]);
-      detectionMemoryRef.current.clear();
-      sessionStartedAtRef.current = startedAt;
-      sessionStartTimeRef.current = startedAt;
-      lastRecordAtRef.current = 0;
-      lastBackendSaveAtRef.current = 0;
+      const sessionId = sessionRes.data.sessionId;
+      setCurrentSessionId(sessionId);
+      setSessionStartTime(Date.now());
+      setRecordStatusText('Recording aktif | Menunggu event pertama...');
+      setRecordEvents([]);
+      setRecordSummary([]);
+      setAnalyzeMetrics(null);
+      setLastMonitoringReport(null);
 
-      if (useInferencePipeline) {
-        try {
-          const health = await checkPipelineStatus();
-          if (!health.ok) {
-            showError('Gagal Memulai', health.message || 'Roboflow WebRTC tidak bisa diakses.');
-            setIsMonitoring(false);
-            isMonitoringRef.current = false;
-            setCurrentSession(null);
-            sessionStartedAtRef.current = null;
-            sessionStartTimeRef.current = 0;
-            return;
-          }
-          await startWebRtcPipeline(response.data.sessionId);
-          showSuccess('Berhasil', 'Live monitoring dimulai dengan Roboflow WebRTC.');
-        } catch (error: any) {
-          const msg =
-            error?.response?.data?.message ||
-            error?.response?.data?.error ||
-            error?.message ||
-            'Roboflow WebRTC gagal dimulai.';
-          showError('Gagal Memulai', msg);
-          try {
-            await stopWebRtcPipeline();
-          } catch {}
-          try {
-            await axios.post(`/api/live-monitoring/stop/${response.data.sessionId}`);
-          } catch {}
-          try {
-            await axios.put(`/api/jadwal/${selectedSchedule}`, { status: 'scheduled' });
-          } catch {}
-          setIsMonitoring(false);
-          isMonitoringRef.current = false;
-          setCurrentSession(null);
-          sessionStartedAtRef.current = null;
-          sessionStartTimeRef.current = 0;
-          await fetchSchedules().catch(() => {});
-        }
-      } else {
-        showSuccess('Berhasil', 'Live monitoring dimulai.');
-        startFlaskDetection(response.data.sessionId);
-      }
-    } catch (error: any) {
-      const msg =
-        error?.response?.data?.message ||
-        error?.response?.data?.error ||
-        error?.message ||
-        'Gagal memulai live monitoring.';
-      showError('Gagal Memulai', msg);
-      console.error('Start monitoring error:', error);
+      // Start AI service recording
+      await axios.post('/api/ai-service/focus/record/start');
+
+      setIsMonitoring(true);
+      showSuccess('Berhasil', 'Monitoring dimulai');
+    } catch (err: any) {
+      console.error('Error starting monitoring:', err);
+      showError('Gagal', err?.response?.data?.message || 'Gagal memulai monitoring');
     }
   };
 
   const stopMonitoring = async () => {
-    if (!currentSession) return;
-
     try {
+      // Stop AI service recording
+      const recordStopRes = await axios.post('/api/ai-service/focus/record/stop');
+      const finalStatus = String(recordStopRes.data?.status || 'Recording selesai');
+      const finalEvents = mapEventRows(Array.isArray(recordStopRes.data?.events) ? recordStopRes.data.events : []);
+      const finalSummary = mapSummaryRows(Array.isArray(recordStopRes.data?.summary) ? recordStopRes.data.summary : []);
+
+      // Stop session
+      await axios.post(`/api/live-monitoring/stop/${currentSessionId}`, {
+        record_status: finalStatus,
+        record_events: finalEvents,
+        record_summary: finalSummary,
+      });
+
+      // Update schedule status to completed
+      if (selectedScheduleId) {
+        await axios.put(`/api/jadwal/${selectedScheduleId}`, { status: 'completed' });
+      }
+
+      setRecordStatusText(finalStatus);
+      setRecordEvents(finalEvents);
+      setRecordSummary(finalSummary);
+      setLastMonitoringReport({
+        status: finalStatus,
+        events: finalEvents,
+        summary: finalSummary,
+        schedule: activeSchedule,
+      });
       setIsMonitoring(false);
-      isMonitoringRef.current = false;
-      if (detectionIntervalRef.current) {
-        clearTimeout(detectionIntervalRef.current);
-      }
+      setCurrentSessionId('');
+      setAnalyzeMetrics(null);
 
-      await axios.post(`/api/live-monitoring/stop/${currentSession.sessionId}`);
-      
-      // Export data automatically
-      let pipelineStopData: any = null;
-      if (useInferencePipeline) {
-        try {
-          pipelineStopData = await stopWebRtcPipeline();
-        } catch (error) {
-          pipelineStopData = buildPipelineResultFromSeats();
-        }
-      }
-      const exported = await exportSessionData({
-        pipelineSummary: pipelineStopData?.summary,
-        pipelineSeatResults: pipelineStopData?.seat_results
-      });
-      
-      setIsMonitoring(false);
-      setCurrentSession(null);
-      setActiveSchedule(null);
-      setDetectionData([]);
-      setDetectionRecords([]);
-      sessionStartedAtRef.current = null;
-      sessionStartTimeRef.current = 0;
-      lastRecordAtRef.current = 0;
-      setModelStatus('inactive');
-      setAnnotatedImage('');
-      setYoloDetections([]);
-      detectionMemoryRef.current.clear();
-      
-      // Reset seat focus data
-      setSeatPositions(prev => prev.map(seat => ({
-        ...seat,
-        face_detected: false,
-        gesture_type: 'unknown',
-        confidence: 0,
-        focus_start_time: null,
-        total_focus_duration: 0
-      })));
-      
-      if (exported) {
-        showSuccess('Berhasil', 'Live monitoring berhenti dan data berhasil diexport.');
-      } else {
-        showError('Export Gagal', 'Live monitoring berhenti, tetapi export gagal. Coba export ulang dari halaman records.');
-      }
-    } catch (error) {
-      showError('Gagal Menghentikan', 'Gagal menghentikan live monitoring.');
-      console.error('Stop monitoring error:', error);
+      showSuccess('Berhasil', 'Monitoring selesai, data tersimpan');
+    } catch (err: any) {
+      console.error('Error stopping monitoring:', err);
+      showError('Gagal', err?.response?.data?.message || 'Gagal menghentikan monitoring');
     }
   };
 
-  const startFlaskDetection = (sessionId: string) => {
-    if (!sessionId) {
-      console.error('Session ID is required for detection');
-      showError('Deteksi Tidak Bisa Dimulai', 'Session ID kosong.');
-      return;
-    }
-    
-    // Clear any existing interval first
-    if (detectionIntervalRef.current) {
-      clearTimeout(detectionIntervalRef.current);
-    }
-    
-    // Run detection once immediately when monitoring starts
-    runDetection(sessionId);
-    
-    const intervalMs = 1000;
-    const tick = async () => {
-      if (!isMonitoringRef.current) return;
-      await runDetection(sessionId);
-      if (!isMonitoringRef.current) return;
-      detectionIntervalRef.current = setTimeout(tick, intervalMs);
-    };
-    detectionIntervalRef.current = setTimeout(tick, intervalMs);
-    
-    console.log(`Detection started for session: ${sessionId}`);
-  };
-
-  useEffect(() => {
-    if (useInferencePipeline) return;
-    if (isMonitoring && currentSession?.sessionId) {
-      startFlaskDetection(currentSession.sessionId);
-    }
-  }, [isMonitoring, currentSession?.sessionId, useInferencePipeline]);
-  
-  const captureFrameDataUrl = async (opts?: { targetWidth?: number; targetHeight?: number; quality?: number }) => {
-    const video = videoRef.current;
-    if (!video) return null;
-
-    const videoWidth = video.videoWidth;
-    const videoHeight = video.videoHeight;
-    if (!videoWidth || !videoHeight) return null;
-
-    const canvas = captureCanvasRef.current || document.createElement('canvas');
-    captureCanvasRef.current = canvas;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return null;
-
-    const quality = Math.max(0.1, Math.min(0.95, opts?.quality ?? detectionJpegQuality));
-    const targetWidth = Math.max(320, Math.min(1920, Math.floor(opts?.targetWidth ?? detectionWidth)));
-    const targetHeight = Math.max(
-      1,
-      Math.floor(
-        opts?.targetHeight ??
-          Math.round(videoHeight * (targetWidth / videoWidth))
-      )
-    );
-
-    canvas.width = targetWidth;
-    canvas.height = targetHeight;
-    lastCaptureDimsRef.current = { width: targetWidth, height: targetHeight };
-    ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
-
-    const blob: Blob | null = await new Promise((resolve) => {
-      canvas.toBlob((b) => resolve(b), 'image/jpeg', quality);
-    });
-    if (!blob) return null;
-
-    const frameData: string = await new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result || ''));
-      reader.onerror = () => reject(new Error('Failed to read frame blob'));
-      reader.readAsDataURL(blob);
-    });
-    if (!frameData || frameData === 'data:,') return null;
-    return frameData;
-  };
-
-  const testDetectionOnce = async () => {
-    if (isTestingDetection) return;
-    setIsTestingDetection(true);
+  const downloadExcel = async () => {
     try {
-      if (useInferencePipeline) {
-        const health = await checkPipelineStatus();
-        if (!health.ok) {
-          showError('Gagal', health.message || 'Roboflow WebRTC tidak bisa diakses.');
-          return;
-        }
-
-        if (!cameraStream) {
-          await startCamera();
-        }
-        const sourceStream = cameraStream || videoRef.current?.srcObject;
-        if (!(sourceStream instanceof MediaStream)) {
-          showError('Gagal', 'Kamera belum siap untuk pengujian WebRTC.');
-          return;
-        }
-
-        let testConnection: any = null;
-        let payloadReceived = false;
-        let detectedCount = 0;
-        const testStartedAt = Date.now();
-
-        try {
-          testConnection = await webrtc.useStream({
-            source: sourceStream,
-            connector: createWebRtcConnector(),
-            wrtcParams: getWebRtcParams(),
-            onData: (payload) => {
-              if (payload?.errors?.length) return;
-              payloadReceived = true;
-              const detections = extractDetectionsFromWebRtc(payload);
-              detectedCount = detections.length;
-              setYoloDetections(detections);
-              setModelStatus('active');
-              setLastInferenceMs(Date.now() - testStartedAt);
-            }
-          });
-
-          for (let i = 0; i < 10; i++) {
-            await new Promise((resolve) => setTimeout(resolve, 500));
-            if (payloadReceived) break;
-          }
-        } finally {
-          await testConnection?.cleanup?.().catch(() => {});
-          if (cameraStream) {
-            await attachStreamToVideo(cameraStream);
-          }
-        }
-
-        if (!payloadReceived) {
-          showError('Gagal', 'Belum ada output dari Roboflow WebRTC. Cek workflow, TURN config, atau izin kamera.');
-          return;
-        }
-
-        showSuccess('Berhasil', `Detections: ${detectedCount}`);
-        return;
-      }
-
-      if (!cameraStream) {
-        await startCamera();
-      }
-      const frameData = await captureFrameDataUrl({ targetWidth: detectionWidth, quality: detectionJpegQuality });
-      if (!frameData) {
-        showError('Tidak Bisa', 'Kamera belum siap. Tunggu 1-2 detik lalu coba lagi.');
-        return;
-      }
-
-      const startTime = Date.now();
-      const response = await axios.post('/api/roboflow-model/detect-frame', {
-        image_base64: frameData,
-        conf: detectionConf,
-        imgsz: detectionWidth,
-        include_annotated: true
-      });
-
-      if (!response.data?.success) {
-        const msg = response.data?.message || 'Unknown error';
-        setModelStatus('error');
-        setFlaskError(msg);
-        showError('Gagal', msg);
-        return;
-      }
-
-      const detections: YoloDetection[] = Array.isArray(response.data.detections) ? response.data.detections : [];
-      setYoloDetections(detections);
-      if (typeof response.data.annotated_image === 'string') {
-        setAnnotatedImage(response.data.annotated_image);
-      }
-      setModelStatus('active');
-      setFlaskError('');
-      setLastInferenceMs(Date.now() - startTime);
-      showSuccess('Berhasil', `Detections: ${detections.length}`);
-    } catch (error: any) {
-      const status = error?.response?.status;
-      const errorMessage =
-        error?.response?.data?.message ||
-        error?.response?.data?.error ||
-        error?.message ||
-        'Unknown error';
-      if (useInferencePipeline) {
-        const msg =
-          status === 502
-            ? 'Backend Express tidak bisa diakses (pastikan server berjalan di http://127.0.0.1:5002).'
-            : errorMessage;
-        setPipelineStatus('error');
-        setPipelineError(msg);
-        showError('Gagal', msg);
-      } else {
-        setModelStatus('error');
-        setFlaskError(errorMessage);
-        if (status === 404) {
-          showError(
-            'Gagal',
-            'Endpoint FastAPI/Roboflow proxy tidak tersedia. Pastikan backend Express dan FastAPI berjalan.'
-          );
-        } else {
-          showError('Gagal', errorMessage);
-        }
-      }
-    } finally {
-      setIsTestingDetection(false);
-    }
-  };
-
-  // Separate function to run detection for better organization
-  const runDetection = async (sessionId: string) => {
-    if (!sessionId) {
-      console.error('Session ID is required for detection');
-      return;
-    }
-    
-    if (!isMonitoringRef.current || !videoRef.current) return;
-
-    try {
-      if (isProcessingRef.current) return;
-      isProcessingRef.current = true;
-
-      const normalizeLabel = (value: unknown) => String(value ?? '').trim().toLowerCase();
-
-      const frameData = await captureFrameDataUrl({ targetWidth: detectionWidth, quality: detectionJpegQuality });
-      if (!frameData) return;
-
-      const startTime = Date.now();
-      const response = await axios.post('/api/roboflow-model/detect-frame', {
-        image_base64: frameData,
-        conf: detectionConf,
-        imgsz: detectionWidth,
-        include_annotated: false
-      });
-
-      if (!response.data?.success) {
-        const msg = response.data?.message || 'Unknown error';
-        setModelStatus('error');
-        setFlaskError(msg);
-        console.error('Detection failed:', msg);
-        return;
-      }
-
-      const rawDetections: YoloDetection[] = Array.isArray(response.data.detections) ? response.data.detections : [];
-
-      const nowMs = Date.now();
-      const memory = detectionMemoryRef.current;
-      const keyForDet = (d: YoloDetection) => {
-        const q = (n: number, step: number) => Math.round(n / step) * step;
-        const b = d.bbox;
-        const x = q(b.x1, 24);
-        const y = q(b.y1, 24);
-        const w = q(b.x2 - b.x1, 24);
-        const h = q(b.y2 - b.y1, 24);
-        return `${normalizeLabel(d.class_name)}:${x}:${y}:${w}:${h}`;
-      };
-
-      for (const det of rawDetections) {
-        memory.set(keyForDet(det), { det, lastSeen: nowMs });
-      }
-
-      for (const [key, value] of memory.entries()) {
-        if (nowMs - value.lastSeen > 500) {
-          memory.delete(key);
-        }
-      }
-
-      const smoothedDetections = Array.from(memory.values()).map(v => v.det);
-      setYoloDetections(smoothedDetections);
-
-      const overlayCanvas = canvasRef.current;
-      const captureDims = lastCaptureDimsRef.current;
-      const scaleX = overlayCanvas && captureDims?.width ? overlayCanvas.width / captureDims.width : 1;
-      const scaleY = overlayCanvas && captureDims?.height ? overlayCanvas.height / captureDims.height : 1;
-
-      const scaledDetections = smoothedDetections.map(d => ({
-        ...d,
-        bbox: {
-          x1: d.bbox.x1 * scaleX,
-          y1: d.bbox.y1 * scaleY,
-          x2: d.bbox.x2 * scaleX,
-          y2: d.bbox.y2 * scaleY
-        }
-      }));
-
-      const modelLabelSet = new Set(Object.values(modelInfo?.names ?? {}).map(normalizeLabel));
-      const behaviorLabels = [
-        'memperhatikan',
-        'focused',
-        'nguap',
-        'yawning',
-        'balikbadan',
-        'looking_away',
-        'chatting',
-        'sleeping',
-        'using_phone',
-        'writing'
-      ];
-      const hasBehaviorLabels = behaviorLabels.some(l => modelLabelSet.has(l));
-      const usePersonOnly = !hasBehaviorLabels && modelLabelSet.has('person');
-      const candidateDetections = usePersonOnly
-        ? scaledDetections.filter(d => normalizeLabel(d.class_name) === 'person')
-        : scaledDetections;
-
-      const focusedLabels = new Set(
-        ['memperhatikan', 'focused'].some(l => modelLabelSet.has(l)) ? ['memperhatikan', 'focused'] : modelLabelSet.has('person') ? ['person'] : ['memperhatikan', 'focused']
-      );
-      const yawningLabels = new Set(['nguap', 'yawning']);
-      const lookingAwayLabels = new Set(['balikbadan', 'looking_away', 'chatting']);
-
-      let seatSnapshot: SeatPosition[] = [];
-      setSeatPositions(prev => {
-
-        const iou = (a: { x1: number; y1: number; x2: number; y2: number }, b: { x1: number; y1: number; x2: number; y2: number }) => {
-          const xA = Math.max(a.x1, b.x1);
-          const yA = Math.max(a.y1, b.y1);
-          const xB = Math.min(a.x2, b.x2);
-          const yB = Math.min(a.y2, b.y2);
-          const interW = Math.max(0, xB - xA);
-          const interH = Math.max(0, yB - yA);
-          const inter = interW * interH;
-          const areaA = Math.max(0, a.x2 - a.x1) * Math.max(0, a.y2 - a.y1);
-          const areaB = Math.max(0, b.x2 - b.x1) * Math.max(0, b.y2 - b.y1);
-          const denom = areaA + areaB - inter;
-          return denom > 0 ? inter / denom : 0;
-        };
-
-        const closeFocusWindow = (seat: SeatPosition) => {
-          if (seat.focus_start_time) {
-            return {
-              ...seat,
-              total_focus_duration: seat.total_focus_duration + Math.max(0, nowMs - seat.focus_start_time),
-              focus_start_time: null
-            };
-          }
-          return seat;
-        };
-
-        const nextSeats = prev.map(seat => {
-          const seatBox = { x1: seat.x, y1: seat.y, x2: seat.x + seat.width, y2: seat.y + seat.height };
-          let best: YoloDetection | null = null;
-          let bestScore = 0;
-
-          for (const det of candidateDetections) {
-            const detBox = det.bbox;
-            const score = iou(seatBox, detBox);
-            if (score > bestScore) {
-              bestScore = score;
-              best = det;
-            }
-          }
-
-          if (!best || bestScore < 0.05) {
-            const seatClosed = closeFocusWindow(seat);
-            return {
-              ...seatClosed,
-              face_detected: false,
-              is_occupied: false,
-              gesture_type: 'unknown',
-              confidence: 0,
-              departure_time: seat.attendance_time ? seatClosed.departure_time || new Date().toISOString() : seatClosed.departure_time
-            };
-          }
-
-          const className = String(best.class_name || '').toLowerCase();
-          const isFocused = focusedLabels.has(normalizeLabel(className));
-          const attendance_time = seat.attendance_time || new Date().toISOString();
-
-          let updated: SeatPosition = {
-            ...seat,
-            face_detected: true,
-            is_occupied: true,
-            gesture_type: best.class_name,
-            confidence: best.confidence,
-            attendance_time,
-            departure_time: null
-          };
-
-          if (isFocused) {
-            if (!updated.focus_start_time) updated.focus_start_time = nowMs;
-          } else {
-            updated = closeFocusWindow(updated);
-          }
-
-          return updated;
-        });
-        seatSnapshot = nextSeats;
-        return nextSeats;
-      });
-
-      setModelStatus('active');
-      setFlaskError('');
-      setLastInferenceMs(Date.now() - startTime);
-
-      const detectionTime = new Date().toLocaleTimeString();
-      const totalDetections = smoothedDetections.length;
-      const focusedCount = smoothedDetections.filter(d => focusedLabels.has(normalizeLabel(d.class_name))).length;
-      const yawningCount = smoothedDetections.filter(d => yawningLabels.has(normalizeLabel(d.class_name))).length;
-      const chattingCount = smoothedDetections.filter(d => lookingAwayLabels.has(normalizeLabel(d.class_name))).length;
-      const notFocusedCount = Math.max(0, totalDetections - focusedCount);
-      const focusPercentage = totalDetections > 0 ? Math.round((focusedCount / totalDetections) * 100) : 0;
-      const label_counts = smoothedDetections.reduce<Record<string, number>>((acc, det) => {
-        const key = normalizeLabel(det.class_name);
-        acc[key] = (acc[key] || 0) + 1;
-        return acc;
-      }, {});
-
-      const now = Date.now();
-      const intervalMs = Math.max(1000, Math.round(recordIntervalSec * 1000));
-      const shouldRecord = now - lastRecordAtRef.current >= intervalMs;
-      if (shouldRecord) {
-        lastRecordAtRef.current = now;
-
-        const seatsForRecord = seatSnapshot.length > 0 ? seatSnapshot : seatPositions;
-        const newDetectionData: DetectionData = {
-          timestamp: detectionTime,
-          totalDetections,
-          focusedCount,
-          notFocusedCount,
-          sleepingCount: 0,
-          phoneUsingCount: 0,
-          chattingCount,
-          yawningCount,
-          writingCount: 0,
-          focusPercentage,
-          label_counts,
-          seatData: seatsForRecord
-        };
-
-        setDetectionData(prev => [...prev.slice(-119), newDetectionData]);
-
-        const startedAt = sessionStartedAtRef.current;
-        const elapsedSeconds = startedAt ? Math.max(0, Math.floor((now - startedAt) / 1000)) : 0;
-        const summaryParts = [
-          `fokus ${focusedCount}`,
-          `tidak ${notFocusedCount}`,
-          yawningCount > 0 ? `nguap ${yawningCount}` : null,
-          chattingCount > 0 ? `balikbadan ${chattingCount}` : null
-        ].filter(Boolean);
-
-        const record: DetectionRecord = {
-          id: `${now}-${Math.random().toString(16).slice(2)}`,
-          timestamp: detectionTime,
-          elapsedTime: formatElapsed(elapsedSeconds),
-          totalDetections,
-          focusedCount,
-          notFocusedCount,
-          yawningCount,
-          chattingCount,
-          focusPercentage,
-          summary: summaryParts.join(' • ')
-        };
-
-        setDetectionRecords(prev => [record, ...prev].slice(0, 200));
-
-        if (now - lastBackendSaveAtRef.current >= intervalMs && currentSession?.sessionId === sessionId) {
-          lastBackendSaveAtRef.current = now;
-          const seat_data = seatsForRecord.map(seat => ({
-            seat_id: String(seat.seat_id),
-            student_id: seat.student_id || null,
-            is_focused: focusedLabels.has(normalizeLabel(seat.gesture_type)),
-            is_occupied: seat.is_occupied,
-            attendance_time: seat.attendance_time,
-            departure_time: seat.departure_time
-          }));
-          try {
-            await axios.post(`/api/live-monitoring/detection/${sessionId}`, {
-              totalDetections,
-              focusedCount,
-              notFocusedCount,
-              sleepingCount: 0,
-              phoneUsingCount: 0,
-              chattingCount,
-              yawningCount,
-              writingCount: 0,
-              focusPercentage,
-              record_interval_ms: intervalMs,
-              total_seats: seatsForRecord.length,
-              seat_data
-            });
-          } catch (error) {
-            const err: any = error;
-            const status = err?.response?.status;
-            const msg = err?.response?.data?.message || err?.message || 'Unknown error';
-            console.error('Failed to save detection data to backend:', status ? `[${status}] ${msg}` : msg);
-          }
-        }
-      }
-      requestDraw();
-
-    } catch (error: any) {
-      const errorMessage = error.response?.data?.message || error.message || 'Unknown error';
-      console.error('Roboflow detection error:', errorMessage);
-      setFlaskError(errorMessage);
-    }
-    finally {
-      isProcessingRef.current = false;
-    }
-  };
-
-  const exportSessionData = async (opts?: { pipelineSummary?: any; pipelineSeatResults?: any }) => {
-    if (!currentSession) return;
-
-    try {
-      const schedule = activeSchedule || schedules.find(s => s._id === selectedSchedule);
-      if (!schedule) {
-        showError('Export Gagal', 'Schedule belum dipilih. Pilih schedule dulu sebelum export.');
-        return null;
-      }
-      if (!isToday(schedule.tanggal)) {
-        showError('Export Gagal', 'Schedule hanya bisa dilakukan pada tanggal yang dijadwalkan.');
-        return null;
-      }
-
-      const startMs = currentSession.startTime ? new Date(currentSession.startTime).getTime() : sessionStartedAtRef.current || Date.now();
-      const sessionDurationMs = Math.max(1, Date.now() - startMs);
-      const sessionDurationMin = Math.max(1, Math.round(sessionDurationMs / 60000));
-      const pipelineFocusPct = typeof opts?.pipelineSummary?.fokus === 'number' ? Number(opts?.pipelineSummary?.fokus) : null;
-      const averageFocusPct =
-        pipelineFocusPct !== null
-          ? pipelineFocusPct
-          : detectionData.length > 0
-            ? detectionData.reduce((sum, d) => sum + (Number(d.focusPercentage) || 0), 0) / detectionData.length
-            : 0;
-
-      // Calculate per-student statistics
-      const studentStats = seatPositions
-        .filter(seat => seat.student_id)
-        .map(seat => ({
-          student_id: seat.student_id,
-          seat_id: seat.seat_id,
-          total_focus_duration: seat.total_focus_duration,
-          attendance_time: seat.attendance_time,
-          departure_time: seat.departure_time,
-          focus_percentage: seat.total_focus_duration > 0 && currentSession.startTime ? 
-            (seat.total_focus_duration / sessionDurationMs) * 100 : 0
-        }));
-
-      const toId = (value: any) => (typeof value === 'string' ? value : value?._id);
-      const mataKuliahId = toId(schedule.mata_kuliah_id) || schedule.mata_kuliah_id;
-      const kelasId = toId((schedule as any).kelas_id) || toId((currentSession as any)?.kelas_id);
-      const jadwalId = selectedSchedule || toId((currentSession as any)?.jadwal_id);
-      const dosenId = toId(schedule.dosen_id) || (user?.role === 'admin' ? selectedDosenId : user?.id);
-
-      const pipelineSeatResults = opts?.pipelineSeatResults && typeof opts?.pipelineSeatResults === 'object' ? opts.pipelineSeatResults : null;
-
-      const dataFokus = pipelineSeatResults
-        ? Object.entries(pipelineSeatResults).map(([seatId, statsAny]: any) => {
-            const stats = statsAny || {};
-            const fokus = Number(stats.fokus || 0);
-            const tidak = Number(stats.tidak_fokus || 0);
-            const total = fokus + tidak;
-            const persenFokus = Math.round(total > 0 ? (fokus / total) * 100 : (stats.focused ? 100 : 0));
-            const durasiFokusMin = Math.max(0, Math.round((sessionDurationMin * persenFokus) / 100));
-            let status: 'Baik' | 'Cukup' | 'Kurang' = 'Kurang';
-            if (persenFokus >= 80) status = 'Baik';
-            else if (persenFokus >= 60) status = 'Cukup';
-            return {
-              id_siswa: String(seatId),
-              jumlah_sesi_fokus: Math.max(0, fokus),
-              durasi_fokus: durasiFokusMin,
-              persen_fokus: persenFokus,
-              persen_tidak_fokus: Math.max(0, 100 - persenFokus),
-              status
-            };
-          })
-        : seatPositions.map(seat => {
-            const pct = Math.max(0, Math.min(100, seat.total_focus_duration > 0 ? (seat.total_focus_duration / sessionDurationMs) * 100 : 0));
-            const persenFokus = Math.round(pct);
-            const durasiFokusMin = Math.max(0, Math.round(seat.total_focus_duration / 60000));
-            const jumlahSesiFokus = durasiFokusMin;
-            let status: 'Baik' | 'Cukup' | 'Kurang' = 'Kurang';
-            if (persenFokus >= 80) status = 'Baik';
-            else if (persenFokus >= 60) status = 'Cukup';
-
-            return {
-              id_siswa: seat.student_id || `S${seat.seat_id}`,
-              jumlah_sesi_fokus: jumlahSesiFokus,
-              durasi_fokus: durasiFokusMin,
-              persen_fokus: persenFokus,
-              persen_tidak_fokus: 100 - persenFokus,
-              status
-            };
-          });
-
-      const focusPercentage =
-        typeof opts?.pipelineSummary?.fokus === 'number'
-          ? Number(opts?.pipelineSummary?.fokus)
-          : (() => {
-              const focusedCount = seatPositions.filter(s => s.total_focus_duration > 0).length;
-              return seatPositions.length > 0 ? Math.round((focusedCount / seatPositions.length) * 100) : 0;
-            })();
-
-      const focusedCount =
-        typeof opts?.pipelineSummary?.fokus_count === 'number'
-          ? Number(opts?.pipelineSummary?.fokus_count)
-          : seatPositions.filter(s => s.total_focus_duration > 0).length;
-      const totalSeatsForSummary =
-        typeof opts?.pipelineSummary?.jumlah_hadir === 'number'
-          ? Number(opts?.pipelineSummary?.jumlah_hadir)
-          : seatPositions.length;
-
-      // Save to database
-      const response = await axios.post('/api/session-records', {
-        sessionId: currentSession.sessionId,
-        liveSessionId: currentSession._id,
-        jadwalId,
-        kelasId,
-        mataKuliahId,
-        sessionName: sessionName || `${schedule.mata_kuliah} - ${schedule.kelas}`,
-        className: schedule.kelas,
-        subjectName: schedule.mata_kuliah,
-        seatData: seatPositions,
-        detectionData,
-        studentData: studentStats,
-        summary: {
-          totalSeats: totalSeatsForSummary,
-          averageFocusTime: seatPositions.reduce((sum, seat) => sum + seat.total_focus_duration, 0) / seatPositions.length,
-          averageFocusTimePct: averageFocusPct,
-          sessionDuration: sessionDurationMs
-        },
-        tanggal: schedule.tanggal,
-        jamMulai: schedule.jam_mulai,
-        jamSelesai: schedule.jam_selesai,
-        durasi: schedule.durasi,
-        dosenId: toId(schedule.dosen_id) || schedule.dosen_id
-      });
-
-      await axios.post('/api/pertemuan', {
-        sessionId: currentSession.sessionId,
-        live_session_id: currentSession._id,
-        jadwal_id: jadwalId,
-        kelas_id: kelasId,
-        tanggal: schedule.tanggal || new Date(),
-        pertemuan_ke: schedule.pertemuan_ke || 1,
-        kelas: schedule.kelas,
-        mata_kuliah: schedule.mata_kuliah,
-        mata_kuliah_id: mataKuliahId,
-        dosen_id: dosenId,
-        durasi_pertemuan: sessionDurationMin,
-        topik: schedule.topik || 'Live Monitoring Session',
-        data_fokus: dataFokus,
-        hasil_akhir_kelas: {
-          fokus: focusPercentage,
-          tidak_fokus: 100 - focusPercentage,
-          jumlah_hadir: totalSeatsForSummary,
-          fokus_count: focusedCount,
-          tidak_fokus_count: Math.max(0, totalSeatsForSummary - focusedCount)
-        }
-      });
-
-      if (selectedSchedule) {
-        await axios.put(`/api/jadwal/${selectedSchedule}`, { status: 'completed' });
-      }
-
-      showSuccess('Berhasil', 'Session berhasil diexport dan tersimpan.');
-      await fetchSchedules();
-      setSelectedSchedule('');
-      setActiveSchedule(null);
-      return response.data;
-    } catch (error) {
-      console.error('Export error:', error);
-      showError('Export Gagal', 'Gagal export session data.');
-      return null;
-    }
-  };
-  
-  const downloadSessionData = async () => {
-    if (!currentSession) {
-      showError('Tidak Bisa', 'Tidak ada sesi aktif untuk diunduh.');
-      return;
-    }
-    
-    try {
-      const response = await axios.get(`/api/export/excel/session/${currentSession.sessionId}`, {
+      const response = await axios.get('/api/ai-service/focus/record/export', {
         responseType: 'blob'
       });
-      
-      // Create a blob URL and trigger download
+
       const url = window.URL.createObjectURL(new Blob([response.data]));
       const link = document.createElement('a');
+      const timestamp = new Date().toISOString().slice(0,10);
+      const filename =
+        parseDownloadFilename(response.headers['content-disposition']) ||
+        `focus-monitoring-${timestamp}.xlsx`;
       link.href = url;
-      link.setAttribute('download', `${sessionName || 'session'}_export.xlsx`);
+      link.setAttribute('download', filename);
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-      
-      showSuccess('Berhasil', 'Session berhasil diunduh.');
-    } catch (error) {
-      console.error('Download error:', error);
-      showError('Gagal', 'Gagal mengunduh session data.');
+      window.URL.revokeObjectURL(url);
+    } catch (err: any) {
+      console.error('Error downloading Excel:', err);
+      showError('Gagal', 'Gagal mengunduh laporan Excel');
     }
   };
-  
-  const saveSessionData = async () => {
-    if (!currentSession) {
-      showError('Gagal Menyimpan', 'Tidak ada sesi aktif untuk disimpan.');
-      return;
-    }
-    
-    try {
-      // First export the data to ensure it's saved
-      const exportedData = await exportSessionData();
-      if (!exportedData) return;
-      
-      // Then save the session state
-      await axios.post(`/api/live-monitoring/saveState/${currentSession.sessionId}`, { 
-        state: { seatPositions, detectionData } 
-      });
-      
-      showSuccess('Berhasil', 'State sesi berhasil disimpan.');
-    } catch (error) {
-      console.error('Save error:', error);
-      showError('Gagal Menyimpan', 'Gagal menyimpan state sesi.');
-    }
-  };
-
-  const loadScheduleData = (scheduleId: string) => {
-    const schedule = schedules.find(s => s._id === scheduleId);
-    if (schedule) {
-      setActiveSchedule(schedule);
-      const toId = (value: any) => (typeof value === 'string' ? value : value?._id);
-      const mkId = toId(schedule.mata_kuliah_id) || schedule.mata_kuliah_id;
-      if (mkId && mkId !== selectedSubjectId) setSelectedSubjectId(mkId);
-      if (schedule.kelas && schedule.kelas !== selectedClassName) setSelectedClassName(schedule.kelas);
-      setSessionName(`${schedule.mata_kuliah} - ${schedule.kelas} - Meeting ${schedule.pertemuan_ke}`);
-      // Load seat positions if available
-      if (schedule.seat_positions && schedule.seat_positions.length > 0) {
-        setSeatPositions(schedule.seat_positions.map((seat: any) => ({
-          ...seat,
-          is_occupied: false,
-          face_detected: false,
-          gesture_type: 'unknown',
-          confidence: 0,
-          focus_start_time: null,
-          total_focus_duration: 0
-        })));
-      }
-    }
-  };
-
-  // Statistics
-  const latestData = detectionData[detectionData.length - 1];
-  const averageFocus = detectionData.length > 0 
-    ? Math.round(detectionData.reduce((sum, d) => sum + d.focusPercentage, 0) / detectionData.length)
-    : 0;
-
-  const pieData = latestData ? [
-    { name: 'Focused', value: latestData.focusedCount, color: '#10B981' },
-    { name: 'Not Focused', value: latestData.notFocusedCount, color: '#EF4444' },
-    { name: 'Sleeping', value: latestData.sleepingCount, color: '#8B5CF6' },
-    { name: 'Using Phone', value: latestData.phoneUsingCount, color: '#F59E0B' },
-    { name: 'Chatting', value: latestData.chattingCount, color: '#EC4899' },
-    { name: 'Writing', value: latestData.writingCount, color: '#06B6D4' }
-  ].filter(item => item.value > 0) : [];
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <motion.div 
-        initial={{ opacity: 0, y: -20 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="bg-gradient-to-r from-blue-600 via-purple-600 to-teal-600 rounded-xl p-6 text-white"
-      >
-        <div className="flex justify-between items-center">
-          <div>
-            <h1 className="text-2xl font-bold flex items-center">
-              <Target className="h-8 w-8 mr-3" />
-              Live Focus Monitoring & AI Detection
-            </h1>
-            <p className="mt-2 opacity-90">Real-time student focus detection with YOLO AI models</p>
-          </div>
-          <div className="flex items-center space-x-4">
-            {isMonitoring && (
-              <motion.div 
-                animate={{ scale: [1, 1.1, 1] }}
-                transition={{ repeat: Infinity, duration: 2 }}
-                className="flex items-center bg-red-500 px-3 py-1 rounded-full"
-              >
-                <div className="w-2 h-2 bg-white rounded-full mr-2"></div>
-                <span className="text-sm font-medium">LIVE</span>
-              </motion.div>
-            )}
-            <motion.button
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              onClick={() => setIsLabellingMode(!isLabellingMode)}
-              className={`px-4 py-2 rounded-lg font-medium transition-all duration-200 ${
-                isLabellingMode 
-                  ? 'bg-orange-500 hover:bg-orange-600' 
-                  : 'bg-white bg-opacity-20 hover:bg-opacity-30'
-              }`}
-            >
-              {isLabellingMode ? 'Exit Labelling' : 'Enter Labelling Mode'}
-            </motion.button>
-          </div>
-        </div>
-      </motion.div>
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-6">
+      <div className="max-w-7xl mx-auto">
+        <h1 className="text-3xl font-bold text-gray-800 mb-8 flex items-center gap-3">
+          <Eye className="w-8 h-8 text-blue-600" />
+          Live Monitoring Fokus Siswa
+        </h1>
 
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-        {/* Control Panel */}
-        <motion.div 
-          initial={{ opacity: 0, x: -20 }}
-          animate={{ opacity: 1, x: 0 }}
-          className="bg-white rounded-xl shadow-sm border border-gray-200 p-6"
-        >
-          <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-            <Settings className="h-5 w-5 mr-2" />
-            Configuration
-          </h3>
-
-          <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
-            <div className="font-semibold mb-2">Panduan Penggunaan (Live)</div>
-            <div className="space-y-1">
-              <div>1) Pilih data: {user?.role === 'admin' ? 'Dosen → Mata Kuliah → Kelas → Jadwal (Hari Ini)' : 'Mata Kuliah → Kelas → Jadwal (Hari Ini)'}</div>
-              <div>2) Start Monitoring: sistem mengunci jadwal menjadi Ongoing (jadwal hilang dari list).</div>
-              <div>3) (Opsional) Enter Labelling Mode untuk menggambar seat, atau Generate Grid.</div>
-              <div>4) Stop & Export: data disimpan + jadwal menjadi Completed (tetap tidak muncul).</div>
-            </div>
-          </div>
-          
-          <div className="space-y-4">
-            <div className="p-3 bg-gray-50 rounded-lg">
-              <div className="flex items-start justify-between gap-4">
+        {!isMonitoring ? (
+          <div className="bg-white rounded-2xl shadow-xl p-8">
+            <h2 className="text-2xl font-semibold text-gray-700 mb-6">Pilih Jadwal Monitoring</h2>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+              {user?.role === 'admin' && (
                 <div>
-                  <span className="text-sm font-medium text-gray-700">Mode Inference</span>
-                  <p className="text-xs text-gray-600 mt-1">
-                    {useInferencePipeline
-                      ? 'Roboflow WebRTC. Browser mengirim stream webcam secara real-time ke worker Roboflow lewat koneksi WebRTC.'
-                      : 'Snapshot per detik. Browser capture frame webcam lalu kirim ke backend Node → FastAPI → Roboflow Model API.'}
-                  </p>
+                  <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center gap-2">
+                    <User className="w-4 h-4" />
+                    Dosen Pengampu
+                  </label>
+                  <select
+                    value={selectedDosenId}
+                    onChange={(e) => {
+                      setSelectedDosenId(e.target.value);
+                      setSelectedKelas('');
+                      setSelectedScheduleId('');
+                      setSchedules([]);
+                      setActiveSchedule(null);
+                    }}
+                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value="">-- Pilih Dosen --</option>
+                    {dosenOptions.map((dosen) => (
+                      <option key={dosen._id} value={dosen._id}>
+                        {dosen.nama_lengkap || dosen.username}
+                      </option>
+                    ))}
+                  </select>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setUseInferencePipeline((prev) => !prev)}
-                  disabled={isMonitoring}
-                  className={`text-xs font-medium px-2 py-1 rounded-full ${
-                    useInferencePipeline ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'
-                  } ${isMonitoring ? 'opacity-60 cursor-not-allowed' : 'hover:opacity-90'}`}
-                >
-                  {useInferencePipeline ? 'WebRTC' : 'FastAPI'}
-                </button>
-              </div>
-            </div>
-
-            <div className="p-3 bg-gray-50 rounded-lg">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm font-medium text-gray-700">
-                  {useInferencePipeline ? 'Roboflow WebRTC' : 'FastAPI Roboflow Model'}
-                </span>
-                <div className={`flex items-center ${
-                  (useInferencePipeline ? pipelineStatus : flaskStatus) === 'connected' ? 'text-green-600' : 
-                  (useInferencePipeline ? pipelineStatus : flaskStatus) === 'error' ? 'text-red-600' : 'text-gray-400'
-                }`}>
-                  {(useInferencePipeline ? pipelineStatus : flaskStatus) === 'connected' ? <CheckCircle className="h-4 w-4" /> :
-                   (useInferencePipeline ? pipelineStatus : flaskStatus) === 'error' ? <XCircle className="h-4 w-4" /> :
-                   <AlertCircle className="h-4 w-4" />}
-                  <span className="ml-1 text-xs">{useInferencePipeline ? pipelineStatus : flaskStatus}</span>
-                </div>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium text-gray-700">Model Status</span>
-                <div className={`flex items-center ${
-                  modelStatus === 'active' ? 'text-green-600' : 
-                  modelStatus === 'loading' ? 'text-yellow-600' :
-                  modelStatus === 'error' ? 'text-red-600' : 'text-gray-400'
-                }`}>
-                  {modelStatus === 'loading' && <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-current mr-1"></div>}
-                  <span className="text-xs">{modelStatus}</span>
-                </div>
-              </div>
-              {useInferencePipeline && pipelineRunnerState && (
-                <p className="text-xs text-gray-600 mt-2">State: {pipelineRunnerState}</p>
               )}
-              {(useInferencePipeline ? pipelineError : flaskError) && (
-                <p className="text-xs text-red-600 mt-2">{useInferencePipeline ? pipelineError : flaskError}</p>
-              )}
-            </div>
 
-            {user?.role === 'admin' && (
+              {user?.role === 'dosen' && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center gap-2">
+                    <User className="w-4 h-4" />
+                    Dosen Pengampu
+                  </label>
+                  <div className="w-full px-4 py-3 border border-blue-200 bg-blue-50 rounded-lg text-blue-900 font-medium">
+                    {user?.nama_lengkap || user?.username || '-'}
+                  </div>
+                </div>
+              )}
+
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center">
-                  <User className="h-4 w-4 mr-2" />
-                  Guru/Dosen
+                <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center gap-2">
+                  <Users className="w-4 h-4" />
+                  Kelas
                 </label>
                 <select
-                  value={selectedDosenId}
+                  value={selectedKelas}
                   onChange={(e) => {
-                    setSelectedDosenId(e.target.value);
-                    setSelectedSubjectId('');
-                    setSelectedClassName('');
-                    setSelectedSchedule('');
+                    setSelectedKelas(e.target.value);
+                    setSelectedScheduleId('');
                     setActiveSchedule(null);
-                    setSessionName('');
-                    setSeatPositions([]);
                   }}
-                  disabled={isMonitoring}
-                  className="w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                  disabled={user?.role === 'admin' && !selectedDosenId}
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 >
-                  <option value="">Pilih dosen</option>
-                  {dosenOptions.map((d) => (
-                    <option key={d._id} value={d._id}>
-                      {d.nama_lengkap || d.username || d._id}
+                  <option value="">-- Pilih Kelas --</option>
+                  {availableKelas.map((kelas) => (
+                    <option key={kelas} value={kelas}>
+                      {kelas}
                     </option>
                   ))}
                 </select>
               </div>
-            )}
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center">
-                <BookOpen className="h-4 w-4 mr-2" />
-                Mata Kuliah
-              </label>
-              <select
-                value={selectedSubjectId}
-                onChange={(e) => {
-                  setSelectedSubjectId(e.target.value);
-                  setSelectedClassName('');
-                  setSelectedSchedule('');
-                  setActiveSchedule(null);
-                  setSessionName('');
-                  setSeatPositions([]);
-                }}
-                disabled={
-                  isMonitoring ||
-                  loadingSubjects ||
-                  (user?.role === 'admin' && !selectedDosenId)
-                }
-                className="w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-              >
-                <option value="">
-                  {user?.role === 'admin' && !selectedDosenId
-                    ? 'Pilih dosen dulu'
-                    : loadingSubjects
-                      ? 'Memuat...'
-                      : 'Pilih mata kuliah'}
-                </option>
-                {subjects.map((s) => (
-                  <option key={s._id} value={s._id}>
-                    {s.nama} ({s.kode})
-                  </option>
-                ))}
-              </select>
             </div>
 
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center">
-                <Users className="h-4 w-4 mr-2" />
-                Kelas
-              </label>
-              <select
-                value={selectedClassName}
-                onChange={(e) => {
-                  setSelectedClassName(e.target.value);
-                  setSelectedSchedule('');
-                  setActiveSchedule(null);
-                  setSessionName('');
-                  setSeatPositions([]);
-                }}
-                disabled={isMonitoring || !selectedSubjectId}
-                className="w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-              >
-                <option value="">
-                  {!selectedSubjectId ? 'Pilih mata kuliah dulu' : 'Pilih kelas'}
-                </option>
-                {(selectedSubject?.kelas || []).map((k) => (
-                  <option key={k} value={k}>
-                    {k}
-                  </option>
-                ))}
-              </select>
-            </div>
+            <div className="mb-8">
+              <div className="flex items-center justify-between gap-4 mb-3">
+                <label className="block text-sm font-medium text-gray-700 flex items-center gap-2">
+                  <Calendar className="w-4 h-4" />
+                  Jadwal Kelas
+                </label>
+                <span className="text-xs text-gray-500">
+                  Jadwal lama tampil sebagai `Done`, jadwal mendatang tampil pudar dan tidak bisa dipilih.
+                </span>
+              </div>
 
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center">
-                <Calendar className="h-4 w-4 mr-2" />
-                Jadwal (Hari Ini)
-              </label>
-              <select
-                value={selectedSchedule}
-                onChange={(e) => {
-                  setSelectedSchedule(e.target.value);
-                  if (!e.target.value) {
-                    setActiveSchedule(null);
-                    setSessionName('');
-                    return;
-                  }
-                  loadScheduleData(e.target.value);
-                }}
-                disabled={
-                  isMonitoring ||
-                  !selectedSubjectId ||
-                  !selectedClassName ||
-                  (user?.role === 'admin' && !selectedDosenId)
-                }
-                className="w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-              >
-                <option value="">
-                  {!selectedSubjectId || !selectedClassName
-                    ? 'Pilih mata kuliah & kelas dulu'
-                    : schedules.length === 0
-                      ? 'Tidak ada jadwal hari ini'
-                      : 'Pilih jadwal'}
-                </option>
-                {schedules.map((schedule) => (
-                  <option key={schedule._id} value={schedule._id}>
-                    {schedule.mata_kuliah} - {schedule.kelas} • {schedule.jam_mulai}-{schedule.jam_selesai} • P{schedule.pertemuan_ke}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center">
-                <BookOpen className="h-4 w-4 mr-2" />
-                Session Name
-              </label>
-              <input
-                type="text"
-                value={sessionName}
-                onChange={(e) => setSessionName(e.target.value)}
-                disabled={isMonitoring}
-                className="w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-                placeholder="Masukkan nama sesi"
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center">
-                <Brain className="h-4 w-4 mr-2" />
-                Model Info
-              </label>
-              <div className="p-3 rounded-md bg-gray-50 border border-gray-200 text-sm text-gray-700">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="font-medium">Classes</span>
-                  <div className="flex items-center gap-3">
-                    <button
-                      type="button"
-                      onClick={useInferencePipeline ? checkPipelineStatus : checkFlaskStatus}
-                      disabled={modelStatus === 'loading'}
-                      className="text-blue-600 hover:text-blue-700 font-medium disabled:opacity-60"
-                    >
-                      Refresh
-                    </button>
-                    <button
-                      type="button"
-                      onClick={testDetectionOnce}
-                      disabled={isTestingDetection}
-                      className="text-blue-600 hover:text-blue-700 font-medium disabled:opacity-60"
-                    >
-                      Test
-                    </button>
+              <div className="space-y-3 max-h-[320px] overflow-auto pr-1">
+                {!selectedKelas ? (
+                  <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 px-4 py-6 text-sm text-gray-500 text-center">
+                    Pilih kelas terlebih dahulu untuk melihat daftar jadwal.
                   </div>
-                </div>
-                {modelInfo?.num_classes ? (
-                  <div className="space-y-1">
-                    <div className="text-gray-600">{modelInfo.num_classes} class</div>
-                    <div className="text-gray-600 break-words">
-                      {Object.values(modelInfo.names).join(', ')}
-                    </div>
+                ) : schedules.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 px-4 py-6 text-sm text-gray-500 text-center">
+                    Belum ada jadwal untuk kelas ini.
                   </div>
                 ) : (
-                  <div className="text-gray-600">Belum ada data model-info Roboflow.</div>
+                  schedules.map((schedule) => {
+                    const presentation = getSchedulePresentation(schedule);
+                    const isSelected = selectedScheduleId === schedule._id;
+                    return (
+                      <button
+                        key={schedule._id}
+                        type="button"
+                        onClick={() => {
+                          if (!presentation.canSelect) return;
+                          setSelectedScheduleId(schedule._id);
+                          setActiveSchedule(schedule);
+                        }}
+                        disabled={!presentation.canSelect}
+                        className={`w-full rounded-2xl border px-4 py-4 text-left transition-all ${presentation.cardClass} ${isSelected ? 'ring-2 ring-blue-500 border-blue-400 shadow-md' : 'hover:shadow-sm'}`}
+                      >
+                        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                          <div>
+                            <div className="text-base font-semibold text-gray-900">
+                              {schedule.mata_kuliah} - {schedule.kelas}
+                            </div>
+                            <div className="mt-1 text-sm text-gray-600">
+                              {formatScheduleDate(schedule.tanggal)}
+                            </div>
+                            <div className="mt-1 text-sm text-gray-600">
+                              {schedule.jam_mulai} - {schedule.jam_selesai} | Pertemuan {schedule.pertemuan_ke}
+                            </div>
+                            {schedule.topik && (
+                              <div className="mt-1 text-sm text-gray-500">
+                                Topik: {schedule.topik}
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="flex flex-col items-start md:items-end gap-2">
+                            <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${presentation.badgeClass}`}>
+                              {presentation.label}
+                            </span>
+                            {presentation.canSelect ? (
+                              <span className="text-xs text-blue-700">Bisa dipilih untuk monitoring</span>
+                            ) : (
+                              <span className="text-xs text-gray-500">Tidak bisa dipilih</span>
+                            )}
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })
                 )}
-                <div className="mt-3 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span>Confidence</span>
-                    <span className="font-medium">{detectionConf.toFixed(2)}</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={0.01}
-                    max={0.5}
-                    step={0.01}
-                    value={detectionConf}
-                    onChange={(e) => setDetectionConf(Number(e.target.value))}
-                    className="w-full"
-                  />
-                </div>
-                <div className="mt-3 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span>Frame width</span>
-                    <span className="font-medium">{detectionWidth}px</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={640}
-                    max={1920}
-                    step={64}
-                    value={detectionWidth}
-                    onChange={(e) => setDetectionWidth(Number(e.target.value))}
-                    className="w-full"
-                  />
-                </div>
-                <div className="mt-3 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span>JPEG quality</span>
-                    <span className="font-medium">{detectionJpegQuality.toFixed(2)}</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={0.4}
-                    max={0.95}
-                    step={0.05}
-                    value={detectionJpegQuality}
-                    onChange={(e) => setDetectionJpegQuality(Number(e.target.value))}
-                    className="w-full"
-                  />
-                </div>
-                <div className="mt-3 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span>Record every</span>
-                    <span className="font-medium">{recordIntervalSec}s</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={1}
-                    max={10}
-                    step={1}
-                    value={recordIntervalSec}
-                    onChange={(e) => setRecordIntervalSec(Number(e.target.value))}
-                    className="w-full"
-                  />
-                </div>
               </div>
             </div>
 
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center">
-                <Camera className="h-4 w-4 mr-2" />
-                Camera Device
-              </label>
-              <div className="flex space-x-2">
+            <div className="flex flex-col md:flex-row gap-4 mb-6">
+              <div className="flex-1">
+                <label className="block text-sm font-medium text-gray-700 mb-2">Kamera</label>
                 <select
-                  value={selectedCamera}
-                  onChange={(e) => setSelectedCamera(e.target.value)}
-                  disabled={isMonitoring}
-                  className="flex-1 border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                  value={selectedCameraId}
+                  onChange={(e) => setSelectedCameraId(e.target.value)}
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 >
-                  <option value="">Pilih kamera</option>
+                  <option value="">-- Pilih Kamera --</option>
                   {cameras.map((camera) => (
                     <option key={camera.deviceId} value={camera.deviceId}>
                       {camera.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            </div>
-            
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center">
-                <Target className="h-4 w-4 mr-2" />
-                Focus Target Rate (%)
-              </label>
-              <input
-                type="number"
-                min="0"
-                max="100"
-                value={targetFocusRate}
-                onChange={(e) => setTargetFocusRate(parseInt(e.target.value))}
-                className="w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-              />
-            </div>
-            
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center">
-                <Grid3X3 className="h-4 w-4 mr-2" />
-                Grid Size
-              </label>
-              <select
-                value={gridSize}
-                onChange={(e) => setGridSize(e.target.value as 'small' | 'medium' | 'large')}
-                className="w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-              >
-                <option value="small">Small (2x2)</option>
-                <option value="medium">Medium (3x3)</option>
-                <option value="large">Large (4x4)</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center">
-                <Users className="h-4 w-4 mr-2" />
-                Total Seats
-              </label>
-              <input
-                type="number"
-                min="1"
-                max="50"
-                value={totalSeats}
-                onChange={(e) => setTotalSeats(parseInt(e.target.value))}
-                disabled={isMonitoring}
-                className="w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-              />
-            </div>
-
-            {/* Action Buttons */}
-            <div className="space-y-2 pt-4">
-              {!cameraStream ? (
-                <motion.button
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  onClick={startCamera}
-                  className="w-full flex items-center justify-center px-4 py-2 bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-lg font-medium"
-                >
-                  <Camera className="h-4 w-4 mr-2" />
-                  Start Camera
-                </motion.button>
-              ) : (
-                <motion.button
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  onClick={stopCamera}
-                  disabled={isMonitoring}
-                  className="w-full flex items-center justify-center px-4 py-2 bg-gradient-to-r from-gray-500 to-gray-600 text-white rounded-lg font-medium disabled:opacity-50"
-                >
-                  <Square className="h-4 w-4 mr-2" />
-                  Stop Camera
-                </motion.button>
-              )}
-
-              {isLabellingMode && (
-                <Fragment>
-                  <motion.button
-                    whileHover={{ scale: 1.02 }}
-                    whileTap={{ scale: 0.98 }}
-                    onClick={generateGridSeats}
-                    className="w-full flex items-center justify-center px-4 py-2 bg-gradient-to-r from-purple-500 to-purple-600 text-white rounded-lg font-medium"
-                  >
-                    <Grid3X3 className="h-4 w-4 mr-2" />
-                    Generate Grid
-                  </motion.button>
-
-                  <motion.button
-                    whileHover={{ scale: 1.02 }}
-                    whileTap={{ scale: 0.98 }}
-                    onClick={clearAllSeats}
-                    className="w-full flex items-center justify-center px-4 py-2 bg-gradient-to-r from-red-500 to-red-600 text-white rounded-lg font-medium"
-                  >
-                    <Trash2 className="h-4 w-4 mr-2" />
-                    Clear Seats
-                  </motion.button>
-                </Fragment>
-              )}
-
-              {!isMonitoring ? (
-                <motion.button
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  onClick={startMonitoring}
-                  disabled={!selectedSchedule}
-                  className="w-full flex items-center justify-center px-4 py-2 bg-gradient-to-r from-green-500 to-green-600 text-white rounded-lg font-medium disabled:opacity-50"
-                >
-                  <Play className="h-4 w-4 mr-2" />
-                  Start Monitoring
-                </motion.button>
-              ) : (
-                <motion.button
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  onClick={stopMonitoring}
-                  className="w-full flex items-center justify-center px-4 py-2 bg-gradient-to-r from-red-500 to-red-600 text-white rounded-lg font-medium"
-                >
-                  <Square className="h-4 w-4 mr-2" />
-                  Stop & Export
-                </motion.button>
-              )}
-              
-              {currentSession && (
-                <Fragment>
-                  <motion.button
-                    whileHover={{ scale: 1.02 }}
-                    whileTap={{ scale: 0.98 }}
-                    onClick={saveSessionData}
-                    className="w-full flex items-center justify-center px-4 py-2 bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-lg font-medium"
-                  >
-                    <Save className="h-4 w-4 mr-2" />
-                    Save Session
-                  </motion.button>
-                  
-                  <motion.button
-                    whileHover={{ scale: 1.02 }}
-                    whileTap={{ scale: 0.98 }}
-                    onClick={downloadSessionData}
-                    className="w-full flex items-center justify-center px-4 py-2 bg-gradient-to-r from-purple-500 to-purple-600 text-white rounded-lg font-medium"
-                  >
-                    <Download className="h-4 w-4 mr-2" />
-                    Download Data
-                  </motion.button>
-                  
-                  <motion.button
-                    whileHover={{ scale: 1.02 }}
-                    whileTap={{ scale: 0.98 }}
-                    onClick={() => {
-                      showSuccess('Info', 'Fitur upload akan tersedia segera.');
-                    }}
-                    className="w-full flex items-center justify-center px-4 py-2 bg-gradient-to-r from-teal-500 to-teal-600 text-white rounded-lg font-medium"
-                  >
-                    <Upload className="h-4 w-4 mr-2" />
-                    Upload Previous Data
-                  </motion.button>
-                </Fragment>
-              )}
-            </div>
-          </div>
-        </motion.div>
-
-        {/* Camera Feed */}
-        <motion.div 
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="lg:col-span-2 bg-white rounded-xl shadow-sm border border-gray-200 p-6"
-        >
-          <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-            <Eye className="h-5 w-5 mr-2" />
-            Camera Feed & AI Detection
-          </h3>
-          
-          <div className="relative bg-gray-900 rounded-lg overflow-hidden" style={{ aspectRatio: '16/9' }}>
-            <video
-              ref={videoRef}
-              autoPlay
-              muted
-              className="w-full h-full object-cover"
-              style={{ display: cameraStream ? 'block' : 'none' }}
-            />
-
-            {annotatedImage && (
-              <img
-                src={annotatedImage}
-                alt="Annotated detection"
-                className="absolute inset-0 w-full h-full object-cover"
-                style={{ pointerEvents: 'none' }}
-              />
-            )}
-            
-            <canvas
-              ref={canvasRef}
-              className="absolute inset-0 w-full h-full"
-              style={{ 
-                display: cameraStream ? 'block' : 'none',
-                cursor: isLabellingMode ? 'crosshair' : 'default',
-                backgroundColor: 'transparent',
-                touchAction: 'none',
-                pointerEvents: isLabellingMode ? 'auto' : 'none'
-              }}
-              onMouseDown={handleCanvasMouseDown}
-              onMouseMove={handleCanvasMouseMove}
-              onMouseUp={handleCanvasMouseUp}
-              onMouseLeave={handleCanvasMouseUp}
-            />
-            
-            {!cameraStream && (
-              <div className="flex items-center justify-center h-full text-gray-400">
-                <div className="text-center">
-                  <Camera className="h-12 w-12 mx-auto mb-2" />
-                  <p>Kamera belum aktif</p>
-                  <p className="text-sm">Mulai kamera untuk menampilkan live stream dan mengirim frame ke Roboflow.</p>
-                </div>
-              </div>
-            )}
-
-            {isMonitoring && (
-              <div className="absolute top-4 left-4 bg-red-500 text-white px-3 py-1 rounded-full text-sm font-medium">
-                AI MONITORING
-              </div>
-            )}
-
-            {isLabellingMode && (
-              <div className="absolute top-4 right-4 bg-orange-500 text-white px-3 py-1 rounded-full text-sm font-medium">
-                LABELLING MODE
-              </div>
-            )}
-
-            {modelStatus === 'active' && isMonitoring && !useInferencePipeline && (
-              <div className="absolute bottom-4 left-4 bg-green-500 text-white px-3 py-1 rounded-full text-sm font-medium">
-                ROBOFLOW ACTIVE
-              </div>
-            )}
-            {useInferencePipeline && isMonitoring && (
-              <div className="absolute bottom-4 left-4 bg-green-500 text-white px-3 py-1 rounded-full text-sm font-medium">
-                WEBRTC ACTIVE
-              </div>
-            )}
-          </div>
-
-          {isMonitoring && (
-            <div className="mt-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
-              <div className="flex items-center justify-between mb-2">
-                <h4 className="font-medium text-gray-900">Detections</h4>
-                <span className="text-sm text-gray-600">{yoloDetections.length} objects</span>
-              </div>
-              <div className="flex items-center justify-between text-sm text-gray-600 mb-3">
-                <span>Inferensi terakhir</span>
-                <span>{lastInferenceMs !== null ? `${lastInferenceMs} ms` : '-'}</span>
-              </div>
-              {yoloDetections.length > 0 ? (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  {yoloDetections.slice(0, 6).map((d, idx) => (
-                    <div key={`${d.class_name}-${idx}`} className="flex items-center justify-between text-sm">
-                      <span className="text-gray-700">{d.class_name}</span>
-                      <span className="text-gray-500">{Math.round(d.confidence * 100)}%</span>
-                    </div>
+                    </option>
                   ))}
-                </div>
-              ) : (
-                <div className="text-sm text-gray-600">
-                  Tidak ada deteksi. Coba turunkan confidence atau pastikan objek sesuai label model (mis. memperhatikan/nguap/balikbadan).
-                </div>
-              )}
-            </div>
-          )}
-
-          {isMonitoring && (
-            <div className="mt-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
-              <div className="flex items-center justify-between mb-2">
-                <h4 className="font-medium text-gray-900">Record Log</h4>
-                <span className="text-sm text-gray-600">{detectionRecords.length} records</span>
+                </select>
               </div>
-              {detectionRecords.length > 0 ? (
-                <div className="space-y-2 max-h-56 overflow-auto">
-                  {detectionRecords.slice(0, 20).map((r) => (
-                    <div key={r.id} className="flex items-start justify-between text-sm">
-                      <div className="text-gray-700">
-                        <div className="font-medium">{r.elapsedTime}</div>
-                        <div className="text-gray-500">{r.timestamp}</div>
-                      </div>
-                      <div className="text-right">
-                        <div className="text-gray-700">{r.summary}</div>
-                        <div className="text-gray-500">{r.focusPercentage}%</div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="text-sm text-gray-600">
-                  Belum ada record. Pastikan monitoring berjalan, atau klik Test lalu tunggu sesuai interval.
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Instructions */}
-          <div className="mt-4 p-4 bg-blue-50 rounded-lg">
-            <h4 className="font-medium text-blue-900 mb-2">
-              {isLabellingMode ? 'Panduan Labelling:' : 'Status Monitoring:'}
-            </h4>
-            {isLabellingMode ? (
-              <ul className="text-sm text-blue-700 space-y-1">
-                <li>• Klik lalu drag untuk membuat bounding box kursi</li>
-                <li>• Biru: kursi kosong, Hijau: fokus, Oranye: tidak fokus, Merah: wajah tidak terdeteksi</li>
-                <li>• Kursi terdefinisi: {seatPositions.length}/{totalSeats}</li>
-              </ul>
-            ) : (
-              <div className="text-sm text-blue-700 space-y-1">
-                <p>• Deteksi AI berjalan pada full frame webcam</p>
-                {useInferencePipeline ? (
-                  <p>â€¢ Stream webcam diproses real-time oleh Roboflow WebRTC worker</p>
-                ) : (
-                  <p>â€¢ Frame yang dikirim ke backend: lebar {detectionWidth}px (JPEG {detectionJpegQuality.toFixed(2)})</p>
-                )}
-                <p>• Interval rekam data: {recordIntervalSec}s</p>
-                {modelInfo?.num_classes ? (
-                  <p>• Classes: {Object.values(modelInfo.names).join(', ')}</p>
-                ) : (
-                  <p>• Classes: (klik Refresh untuk memuat model-info)</p>
-                )}
-              </div>
-            )}
-          </div>
-        </motion.div>
-
-        {/* Statistics Panel */}
-        <motion.div 
-          initial={{ opacity: 0, x: 20 }}
-          animate={{ opacity: 1, x: 0 }}
-          className="space-y-6"
-        >
-          {/* Current Stats */}
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-              <BarChart3 className="h-5 w-5 mr-2" />
-              Live Statistics
-            </h3>
-            
-            {latestData ? (
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="bg-gradient-to-r from-blue-50 to-blue-100 p-3 rounded-lg">
-                    <div className="text-2xl font-bold text-blue-600">{latestData.totalDetections}</div>
-                    <div className="text-sm text-blue-600">Total Detected</div>
-                  </div>
-                  <div className="bg-gradient-to-r from-green-50 to-green-100 p-3 rounded-lg">
-                    <div className="text-2xl font-bold text-green-600">{latestData.focusPercentage}%</div>
-                    <div className="text-sm text-green-600">Focus Rate</div>
-                  </div>
-                </div>
-                
-                <div className="space-y-2">
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm text-gray-600">Focused</span>
-                    <span className="text-sm font-medium text-green-600">{latestData.focusedCount}</span>
-                  </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm text-gray-600">Not Focused</span>
-                    <span className="text-sm font-medium text-red-600">{latestData.notFocusedCount}</span>
-                  </div>
-
-                <div className="flex justify-between items-center">
-                  <span className="text-sm text-gray-600">Yawning</span>
-                  <span className="text-sm font-medium text-purple-600">{latestData.yawningCount}</span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-sm text-gray-600">Balik Badan</span>
-                  <span className="text-sm font-medium text-orange-600">{latestData.chattingCount}</span>
-                </div>
-                  
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm text-gray-600">Average Focus</span>
-                    <span className="text-sm font-medium text-blue-600">{averageFocus}%</span>
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div className="text-center text-gray-500 py-8">
-                <Eye className="h-8 w-8 mx-auto mb-2" />
-                <p>No detection data yet</p>
-              </div>
-            )}
-          </div>
-
-          {/* Analytics Panel */}
-          {showAnalytics && (
-            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-                <BarChart3 className="h-5 w-5 mr-2" />
-                Focus Analytics
-              </h3>
-              
-              <div className="grid grid-cols-2 gap-4 mb-4">
-                <div className="bg-gray-50 p-3 rounded-lg">
-                  <p className="text-sm font-medium text-gray-500">Target Focus Rate</p>
-                  <div className="flex items-end justify-between">
-                    <p className="text-2xl font-bold text-blue-600">{targetFocusRate}%</p>
-                    <Target className="h-5 w-5 text-blue-600" />
-                  </div>
-                </div>
-                
-                <div className="bg-gray-50 p-3 rounded-lg">
-                  <p className="text-sm font-medium text-gray-500">Current Focus Rate</p>
-                  <div className="flex items-end justify-between">
-                    <p className="text-2xl font-bold text-green-600">{averageFocus}%</p>
-                    <div className={`${averageFocus >= targetFocusRate ? 'text-green-600' : 'text-red-600'}`}>
-                      {averageFocus >= targetFocusRate ? <CheckCircle className="h-5 w-5" /> : <AlertCircle className="h-5 w-5" />}
-                    </div>
-                  </div>
-                </div>
+              <div className="md:w-56 flex items-end">
+                <button
+                  onClick={cameraStream ? stopCameraStream : openCamera}
+                  type="button"
+                  disabled={isCameraLoading}
+                  className="w-full py-3 bg-slate-700 hover:bg-slate-800 disabled:bg-slate-400 text-white font-semibold rounded-lg flex items-center justify-center gap-2 transition-colors"
+                >
+                  <Camera className="w-5 h-5" />
+                  {cameraStream ? 'Tutup Kamera' : isCameraLoading ? 'Membuka...' : 'Buka Kamera'}
+                </button>
               </div>
             </div>
-          )}
-          
-          {/* Seat Management */}
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-              <Users className="h-5 w-5 mr-2" />
-              Seats ({seatPositions.length})
-            </h3>
-            
-            <div className="space-y-2 max-h-64 overflow-y-auto">
-              {seatPositions.map((seat) => (
-                <div key={seat.seat_id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                  <div className="flex items-center">
-                    <div className={`w-3 h-3 rounded-full mr-3 ${
-                      seat.gesture_type === 'focused' ? 'bg-green-500' : 
-                      seat.face_detected ? 'bg-orange-500' : 
-                      seat.is_occupied ? 'bg-red-500' : 'bg-blue-500'
-                    }`}></div>
-                    <div>
-                      <p className="text-sm font-medium text-gray-900">Seat {seat.seat_id}</p>
-                      <p className="text-xs text-gray-500">
-                        {seat.gesture_type !== 'unknown' ? seat.gesture_type : 'No detection'}
-                      </p>
-                      <p className="text-xs text-gray-500">
-                        Focus: {Math.round(seat.total_focus_duration / 1000)}s
-                      </p>
-                    </div>
-                  </div>
-                  {isLabellingMode && (
-                    <button
-                      onClick={() => setSeatPositions(seatPositions.filter(s => s.seat_id !== seat.seat_id))}
-                      className="p-1 text-red-500 hover:bg-red-50 rounded"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
+
+            <div className="bg-gray-950 rounded-2xl overflow-hidden mb-6" style={{ aspectRatio: '16 / 9' }}>
+              {cameraStream ? (
+                <div className="relative w-full h-full">
+                  <video
+                    ref={videoRef}
+                    autoPlay
+                    muted
+                    playsInline
+                    onLoadedMetadata={() => setIsVideoReady(true)}
+                    onCanPlay={() => setIsVideoReady(true)}
+                    className="w-full h-full object-cover"
+                  />
+                  {annotatedImage && (
+                    <img
+                      src={annotatedImage}
+                      alt="AI preview"
+                      className="absolute inset-0 w-full h-full object-cover"
+                    />
                   )}
                 </div>
-              ))}
+              ) : (
+                <div className="w-full h-full flex flex-col items-center justify-center text-gray-300">
+                  <Camera className="w-12 h-12 mb-3" />
+                  <p>Kamera belum aktif</p>
+                </div>
+              )}
             </div>
 
-            {seatPositions.length === 0 && (
-              <div className="text-center py-8 text-gray-500">
-                <Users className="h-8 w-8 mx-auto mb-2" />
-                <p className="text-sm">No seats defined</p>
-                <p className="text-xs">Enter labelling mode to add seats</p>
+            <button
+              onClick={startMonitoring}
+              disabled={!selectedScheduleId || !cameraStream}
+              className="w-full py-4 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-white font-semibold rounded-lg flex items-center justify-center gap-2 transition-colors"
+            >
+              <Play className="w-5 h-5" />
+              Mulai Monitoring
+            </button>
+
+            {lastMonitoringReport && (
+              <div className="mt-8 bg-slate-50 border border-slate-200 rounded-2xl p-6 space-y-5">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <h3 className="text-xl font-semibold text-slate-800">Rekap Monitoring Terakhir</h3>
+                    <p className="text-sm text-slate-600">{lastMonitoringReport.status}</p>
+                  </div>
+                  <button
+                    onClick={downloadExcel}
+                    className="py-3 px-5 bg-green-600 hover:bg-green-700 text-white font-semibold rounded-lg flex items-center justify-center gap-2 transition-colors"
+                  >
+                    <Download className="w-5 h-5" />
+                    Unduh Excel
+                  </button>
+                </div>
+
+                {lastMonitoringReport.schedule && (
+                  <div className="text-sm text-slate-700">
+                    {lastMonitoringReport.schedule.mata_kuliah} | {lastMonitoringReport.schedule.kelas} | Pertemuan {lastMonitoringReport.schedule.pertemuan_ke}
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+                  <div className="rounded-lg bg-white border border-slate-200 px-4 py-3">
+                    <div className="text-slate-500">Total Event</div>
+                    <div className="text-xl font-semibold text-slate-800">{lastMonitoringReport.events.length}</div>
+                  </div>
+                  <div className="rounded-lg bg-white border border-slate-200 px-4 py-3">
+                    <div className="text-slate-500">Jumlah Siswa Terdeteksi</div>
+                    <div className="text-xl font-semibold text-slate-800">{lastMonitoringReport.summary.length}</div>
+                  </div>
+                  <div className="rounded-lg bg-white border border-slate-200 px-4 py-3">
+                    <div className="text-slate-500">Status</div>
+                    <div className="text-sm font-semibold text-slate-800">Siap diunduh ke Excel</div>
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="min-w-full divide-y divide-slate-200 text-sm">
+                    <thead className="bg-white">
+                      <tr>
+                        <th className="px-4 py-3 text-left font-medium text-slate-600">ID</th>
+                        <th className="px-4 py-3 text-left font-medium text-slate-600">Label</th>
+                        <th className="px-4 py-3 text-left font-medium text-slate-600">Focused</th>
+                        <th className="px-4 py-3 text-left font-medium text-slate-600">Not Focused</th>
+                        <th className="px-4 py-3 text-left font-medium text-slate-600">Total</th>
+                        <th className="px-4 py-3 text-left font-medium text-slate-600">First Seen</th>
+                        <th className="px-4 py-3 text-left font-medium text-slate-600">Last Seen</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 bg-white">
+                      {lastMonitoringReport.summary.length > 0 ? (
+                        lastMonitoringReport.summary.map((row) => (
+                          <tr key={`${row.id}-${row.firstSeen}`}>
+                            <td className="px-4 py-3 text-slate-700">{row.id}</td>
+                            <td className="px-4 py-3 text-slate-700">{row.label}</td>
+                            <td className="px-4 py-3 text-slate-700">{row.focused}</td>
+                            <td className="px-4 py-3 text-slate-700">{row.notFocused}</td>
+                            <td className="px-4 py-3 text-slate-700">{row.total}</td>
+                            <td className="px-4 py-3 text-slate-700">{row.firstSeen}</td>
+                            <td className="px-4 py-3 text-slate-700">{row.lastSeen}</td>
+                          </tr>
+                        ))
+                      ) : (
+                        <tr>
+                          <td colSpan={7} className="px-4 py-6 text-center text-slate-500">
+                            Belum ada ringkasan event yang tersimpan.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
           </div>
-
-          {/* Session Info */}
-          {currentSession && (
-            <motion.div 
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              className="bg-gradient-to-r from-purple-50 to-pink-50 rounded-xl border border-purple-200 p-6"
-            >
-              <h3 className="text-lg font-semibold text-purple-900 mb-4 flex items-center">
-                <Clock className="h-5 w-5 mr-2" />
-                Session Info
-              </h3>
-              
-              <div className="space-y-2 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-purple-700">Session:</span>
-                  <span className="font-medium text-purple-900">{sessionName}</span>
+        ) : (
+          <div className="space-y-6">
+            {activeSchedule && (
+              <div className="bg-white rounded-xl shadow-lg p-4 flex items-center justify-between">
+                <div className="flex items-center gap-4">
+                  <BookOpen className="w-6 h-6 text-blue-600" />
+                  <div>
+                    <h3 className="font-semibold text-lg">{activeSchedule.mata_kuliah}</h3>
+                    <p className="text-gray-600">
+                      {activeSchedule.kelas} - {activeSchedule.dosen_name} - Pertemuan {activeSchedule.pertemuan_ke}
+                    </p>
+                  </div>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-purple-700">Started:</span>
-                  <span className="font-medium text-purple-900">
-                    {new Date(currentSession.startTime).toLocaleTimeString()}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-purple-700">Average Focus:</span>
-                  <span className="font-medium text-purple-900">{averageFocus}%</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-purple-700">Model:</span>
-                  <span className="font-medium text-purple-900">
-                    {modelInfo?.num_classes ? 'Ultralytics YOLO (.pt)' : 'Not loaded'}
+                <div className="flex items-center gap-3">
+                  <span className="text-sm text-gray-500">
+                    Berjalan {Math.floor((Date.now() - sessionStartTime) / 1000)} detik
                   </span>
                 </div>
               </div>
-            </motion.div>
-          )}
-        </motion.div>
-      </div>
+            )}
 
-      {/* Charts */}
-      <AnimatePresence>
-        {detectionData.length > 0 && (
-          <motion.div 
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -20 }}
-            className="grid grid-cols-1 lg:grid-cols-2 gap-6"
-          >
-            {/* Focus Trend */}
-            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">Focus Trend</h3>
-              <ResponsiveContainer width="100%" height={300}>
-                <LineChart data={detectionData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="timestamp" />
-                  <YAxis />
-                  <Tooltip />
-                  <Line 
-                    type="monotone" 
-                    dataKey="focusPercentage" 
-                    stroke="#3B82F6" 
-                    strokeWidth={3}
-                    dot={{ fill: '#3B82F6', strokeWidth: 2, r: 4 }}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-
-            {/* Activity Distribution */}
-            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">Current Activity Distribution</h3>
-              {pieData.length > 0 ? (
-                <ResponsiveContainer width="100%" height={300}>
-                  <PieChart>
-                    <Pie
-                      data={pieData}
-                      cx="50%"
-                      cy="50%"
-                      innerRadius={60}
-                      outerRadius={120}
-                      paddingAngle={5}
-                      dataKey="value"
-                    >
-                      {pieData.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={entry.color} />
-                      ))}
-                    </Pie>
-                    <Tooltip />
-                  </PieChart>
-                </ResponsiveContainer>
-              ) : (
-                <div className="flex items-center justify-center h-[300px] text-gray-500">
-                  <div className="text-center">
-                    <EyeOff className="h-8 w-8 mx-auto mb-2" />
-                    <p>No activity data</p>
+            <div className="bg-white rounded-2xl shadow-xl overflow-hidden">
+              <div className="relative bg-gray-950" style={{ aspectRatio: '16 / 9' }}>
+                {cameraStream ? (
+                  <>
+                    <video
+                      ref={videoRef}
+                      autoPlay
+                      muted
+                      playsInline
+                      onLoadedMetadata={() => setIsVideoReady(true)}
+                      onCanPlay={() => setIsVideoReady(true)}
+                      className="w-full h-full object-cover"
+                    />
+                    {annotatedImage && (
+                      <img
+                        src={annotatedImage}
+                        alt="AI preview"
+                        className="absolute inset-0 w-full h-full object-cover"
+                      />
+                    )}
+                  </>
+                ) : (
+                  <div className="w-full h-full flex flex-col items-center justify-center text-gray-300">
+                    <Camera className="w-12 h-12 mb-3" />
+                    <p>Kamera belum aktif</p>
                   </div>
+                )}
+              </div>
+              <div className="border-t border-gray-100 px-6 py-4 grid grid-cols-1 md:grid-cols-4 gap-4 text-sm">
+                <div className="rounded-lg bg-slate-50 px-4 py-3">
+                  <div className="text-gray-500">Status AI</div>
+                  <div className="font-semibold text-gray-800">{analyzeMetrics?.status || 'menunggu'}</div>
                 </div>
-              )}
-              
-              {pieData.length > 0 && (
-                <div className="flex flex-wrap justify-center gap-4 mt-4">
-                  {pieData.map((entry, index) => (
-                    <div key={index} className="flex items-center gap-2">
-                      <div 
-                        className="w-3 h-3 rounded-full" 
-                        style={{ backgroundColor: entry.color }}
-                      ></div>
-                      <span className="text-sm text-gray-600">{entry.name}: {entry.value}</span>
-                    </div>
-                  ))}
+                <div className="rounded-lg bg-slate-50 px-4 py-3">
+                  <div className="text-gray-500">Jumlah Orang</div>
+                  <div className="font-semibold text-gray-800">{analyzeMetrics?.people_count ?? 0}</div>
                 </div>
-              )}
+                <div className="rounded-lg bg-slate-50 px-4 py-3">
+                  <div className="text-gray-500">Focused</div>
+                  <div className="font-semibold text-green-700">{analyzeMetrics?.focused_count ?? 0}</div>
+                </div>
+                <div className="rounded-lg bg-slate-50 px-4 py-3">
+                  <div className="text-gray-500">Not Focused</div>
+                  <div className="font-semibold text-red-700">{analyzeMetrics?.not_focused_count ?? 0}</div>
+                </div>
+              </div>
             </div>
-          </motion.div>
+
+            <div className="bg-white rounded-2xl shadow-xl p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold text-gray-800">Timestamp Table</h3>
+                <span className="text-sm text-gray-500">{recordEvents.length} event</span>
+              </div>
+
+              <div className="mb-4 rounded-lg bg-blue-50 border border-blue-100 px-4 py-3 text-sm text-blue-900">
+                {recordStatusText || 'Menunggu data recording...'}
+              </div>
+
+              <div className="max-h-[420px] overflow-auto border border-gray-100 rounded-xl">
+                <table className="min-w-full divide-y divide-gray-200 text-sm">
+                  <thead className="bg-gray-50 sticky top-0 z-10">
+                    <tr>
+                      <th className="px-4 py-3 text-left font-medium text-gray-600">Timestamp</th>
+                      <th className="px-4 py-3 text-left font-medium text-gray-600">ID</th>
+                      <th className="px-4 py-3 text-left font-medium text-gray-600">Label</th>
+                      <th className="px-4 py-3 text-left font-medium text-gray-600">Status</th>
+                      <th className="px-4 py-3 text-left font-medium text-gray-600">Confidence</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100 bg-white">
+                    {recordEvents.length > 0 ? (
+                      recordEvents.slice().reverse().map((event, index) => (
+                        <tr key={`${event.timestamp}-${event.id}-${index}`}>
+                          <td className="px-4 py-3 text-gray-700">{event.timestamp}</td>
+                          <td className="px-4 py-3 text-gray-700">{event.id}</td>
+                          <td className="px-4 py-3 text-gray-700">{event.label}</td>
+                          <td className="px-4 py-3 text-gray-700">{event.status}</td>
+                          <td className="px-4 py-3 text-gray-700">{event.confidence.toFixed(3)}</td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan={5} className="px-4 py-6 text-center text-gray-500">
+                          Belum ada event yang terekam.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="flex gap-4">
+              <button
+                onClick={cameraStream ? stopCameraStream : openCamera}
+                type="button"
+                disabled={isCameraLoading}
+                className="flex-1 py-4 bg-slate-700 hover:bg-slate-800 disabled:bg-slate-400 text-white font-semibold rounded-lg flex items-center justify-center gap-2 transition-colors"
+              >
+                <Camera className="w-5 h-5" />
+                {cameraStream ? 'Tutup Kamera' : isCameraLoading ? 'Membuka...' : 'Buka Kamera'}
+              </button>
+              <button
+                onClick={stopMonitoring}
+                className="flex-1 py-4 bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg flex items-center justify-center gap-2 transition-colors"
+              >
+                <Square className="w-5 h-5" />
+                Selesaikan Monitoring
+              </button>
+              <button
+                onClick={downloadExcel}
+                className="flex-1 py-4 bg-green-600 hover:bg-green-700 text-white font-semibold rounded-lg flex items-center justify-center gap-2 transition-colors"
+              >
+                <Download className="w-5 h-5" />
+                Unduh Laporan Excel
+              </button>
+            </div>
+          </div>
         )}
-      </AnimatePresence>
+      </div>
+      <canvas ref={captureCanvasRef} className="hidden" />
     </div>
   );
 }

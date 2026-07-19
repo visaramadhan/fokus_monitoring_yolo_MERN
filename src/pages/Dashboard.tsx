@@ -61,6 +61,39 @@ interface FocusTrend {
   meetings: number;
 }
 
+function getYearOptions() {
+  const currentYear = new Date().getFullYear();
+  return Array.from({ length: 6 }, (_, index) => String(currentYear - index));
+}
+
+function buildRangeParams(
+  mode: 'all' | 'year' | 'custom',
+  year: string,
+  startDate: string,
+  endDate: string
+) {
+  const params: Record<string, string> = {};
+  if (mode === 'year' && year) {
+    params.year = year;
+  }
+  if (mode === 'custom' && startDate && endDate) {
+    params.startDate = startDate;
+    params.endDate = endDate;
+  }
+  return params;
+}
+
+function getRangeLabel(
+  mode: 'all' | 'year' | 'custom',
+  year: string,
+  startDate: string,
+  endDate: string
+) {
+  if (mode === 'year' && year) return `year-${year}`;
+  if (mode === 'custom' && startDate && endDate) return `${startDate}_to_${endDate}`;
+  return 'all-data';
+}
+
 export default function Dashboard() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [recentMeetings, setRecentMeetings] = useState<RecentMeeting[]>([]);
@@ -75,6 +108,10 @@ export default function Dashboard() {
   const [trendInterval, setTrendInterval] = useState<'month' | 'week'>('month');
   const [periodMonths, setPeriodMonths] = useState<number>(6);
   const [periodWeeks, setPeriodWeeks] = useState<number>(8);
+  const [rangeMode, setRangeMode] = useState<'all' | 'year' | 'custom'>('all');
+  const [filterYear, setFilterYear] = useState('');
+  const [filterStartDate, setFilterStartDate] = useState('');
+  const [filterEndDate, setFilterEndDate] = useState('');
   const [loading, setLoading] = useState(true);
   const { user } = useAuth();
 
@@ -82,13 +119,14 @@ export default function Dashboard() {
     fetchDashboardData();
     fetchClasses();
     fetchSubjects();
-  }, []);
+  }, [rangeMode, filterYear, filterStartDate, filterEndDate]);
 
   const fetchDashboardData = async () => {
     try {
+      const baseParams = buildRangeParams(rangeMode, filterYear, filterStartDate, filterEndDate);
       const [overviewRes, trendsRes] = await Promise.all([
-        axios.get('/api/dashboard/overview'),
-        axios.get(`/api/dashboard/focus-trends?interval=${trendInterval}`)
+        axios.get('/api/dashboard/overview', { params: baseParams }),
+        axios.get('/api/dashboard/focus-trends', { params: { interval: trendInterval, ...baseParams } })
       ]);
 
       const overview = overviewRes.data || {};
@@ -112,14 +150,17 @@ export default function Dashboard() {
   useEffect(() => {
     const fetchTrendsOnly = async () => {
       try {
-        let url = `/api/dashboard/focus-trends?interval=${trendInterval}`;
+        const params: Record<string, string> = {
+          interval: trendInterval,
+          ...buildRangeParams(rangeMode, filterYear, filterStartDate, filterEndDate)
+        };
         if (trendFilterType === 'mata_kuliah' && trendFilterValue) {
           const subject = subjects.find(s => s.nama === trendFilterValue);
           if (subject) {
-            url += `&subjectId=${subject._id}`;
+            params.subjectId = subject._id;
           }
         }
-        const res = await axios.get(url);
+        const res = await axios.get('/api/dashboard/focus-trends', { params });
         setFocusTrends(Array.isArray(res.data) ? res.data : []);
       } catch (e) {
         console.error('Error fetching focus trends:', e);
@@ -127,7 +168,7 @@ export default function Dashboard() {
       }
     };
     fetchTrendsOnly();
-  }, [trendInterval, trendFilterType, trendFilterValue, subjects]);
+  }, [trendInterval, trendFilterType, trendFilterValue, subjects, rangeMode, filterYear, filterStartDate, filterEndDate]);
   
   const fetchClasses = async () => {
     try {
@@ -296,20 +337,23 @@ export default function Dashboard() {
     .slice(0, 10);
   
   const exportFlaggedCSV = () => {
-    const headers = ['Class','Average Focus','Meetings','Note'];
+    const headers = ['Class','Average Focus','Meetings','Note','Range'];
+    const rangeLabel = getRangeLabel(rangeMode, filterYear, filterStartDate, filterEndDate);
     const rows = flaggedClasses.map(k => {
       const note = (k.averageFocus || 0) < focusThreshold ? 'Below threshold' : '';
-      return [k._id, Math.round(k.averageFocus || 0).toString(), (k.totalMeetings || 0).toString(), note];
+      return [k._id, Math.round(k.averageFocus || 0).toString(), (k.totalMeetings || 0).toString(), note, rangeLabel];
     });
     const csv = [headers.join(','), ...rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(','))].join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'flagged-classes.csv';
+    a.download = `flagged-classes-${rangeLabel}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
+
+  const yearOptions = getYearOptions();
 
   if (loading) {
     return (
@@ -327,13 +371,69 @@ export default function Dashboard() {
         animate={{ opacity: 1, y: 0 }}
         className="bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-600 rounded-xl p-6 text-white"
       >
-        <h1 className="text-2xl font-bold">Welcome back, {user?.nama_lengkap}!</h1>
-        <p className="mt-2 opacity-90">
-          {user?.role === 'admin' 
-            ? "Here's an overview of the focus monitoring system performance."
-            : "Here's what's happening with your classes today."
-          }
-        </p>
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <h1 className="text-2xl font-bold">Welcome back, {user?.nama_lengkap}!</h1>
+            <p className="mt-2 opacity-90">
+              {user?.role === 'admin' 
+                ? "Here's an overview of the focus monitoring system performance."
+                : "Here's what's happening with your classes today."
+              }
+            </p>
+          </div>
+          <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+            <span className="text-sm font-medium opacity-90">Rentang Rekap</span>
+            <select
+              value={rangeMode}
+              onChange={(e) => setRangeMode(e.target.value as 'all' | 'year' | 'custom')}
+              className="rounded-md border border-white/20 bg-white/10 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-white/40"
+            >
+              <option value="all" className="text-gray-900">Semua Data</option>
+              <option value="year" className="text-gray-900">Per Tahun</option>
+              <option value="custom" className="text-gray-900">Rentang Tanggal</option>
+            </select>
+            {rangeMode === 'year' && (
+              <select
+                value={filterYear}
+                onChange={(e) => setFilterYear(e.target.value)}
+                className="rounded-md border border-white/20 bg-white/10 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-white/40"
+              >
+                <option value="" className="text-gray-900">Pilih Tahun</option>
+                {yearOptions.map((year) => (
+                  <option key={year} value={year} className="text-gray-900">{year}</option>
+                ))}
+              </select>
+            )}
+            {rangeMode === 'custom' && (
+              <>
+                <input
+                  type="date"
+                  value={filterStartDate}
+                  onChange={(e) => setFilterStartDate(e.target.value)}
+                  className="rounded-md border border-white/20 bg-white/10 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-white/40"
+                />
+                <input
+                  type="date"
+                  value={filterEndDate}
+                  onChange={(e) => setFilterEndDate(e.target.value)}
+                  className="rounded-md border border-white/20 bg-white/10 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-white/40"
+                />
+              </>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                setRangeMode('all');
+                setFilterYear('');
+                setFilterStartDate('');
+                setFilterEndDate('');
+              }}
+              className="rounded-md border border-white/20 bg-white/10 px-3 py-2 text-sm text-white hover:bg-white/20"
+            >
+              Reset
+            </button>
+          </div>
+        </div>
       </motion.div>
 
       {/* Executive Summary */}

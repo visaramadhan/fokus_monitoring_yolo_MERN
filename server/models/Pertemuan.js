@@ -41,6 +41,29 @@ const dataFokusSchema = new mongoose.Schema({
   }
 });
 
+const recordEventSchema = new mongoose.Schema({
+  timestamp: {
+    type: String,
+    default: ''
+  },
+  id: {
+    type: String,
+    default: ''
+  },
+  label: {
+    type: String,
+    default: ''
+  },
+  status: {
+    type: String,
+    default: ''
+  },
+  confidence: {
+    type: Number,
+    default: 0
+  }
+}, { _id: false });
+
 const pertemuanSchema = new mongoose.Schema({
   sessionId: {
     type: String,
@@ -148,6 +171,10 @@ const pertemuanSchema = new mongoose.Schema({
   catatan: {
     type: String,
     default: ''
+  },
+  record_events: {
+    type: [recordEventSchema],
+    default: []
   }
 }, {
   timestamps: true

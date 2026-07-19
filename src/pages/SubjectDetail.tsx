@@ -36,12 +36,45 @@ interface Meeting {
   topik: string;
 }
 
+function getYearOptions(meetings: Meeting[]) {
+  return Array.from(
+    new Set(
+      meetings
+        .map((meeting) => new Date(meeting.tanggal).getFullYear())
+        .filter((year) => !Number.isNaN(year))
+        .map((year) => String(year))
+    )
+  ).sort((a, b) => Number(b) - Number(a));
+}
+
+function buildReportParams(
+  mode: 'all' | 'year' | 'custom',
+  reportYear: string,
+  reportStartDate: string,
+  reportEndDate: string
+) {
+  const params: Record<string, string> = {};
+  if (mode === 'year' && reportYear) {
+    params.year = reportYear;
+  }
+  if (mode === 'custom' && reportStartDate && reportEndDate) {
+    params.startDate = reportStartDate;
+    params.endDate = reportEndDate;
+  }
+  return params;
+}
+
 export default function SubjectDetail() {
   const { id } = useParams<{ id: string }>();
   const { showSuccess, showError } = useStatusModal();
   const [subject, setSubject] = useState<MataKuliah | null>(null);
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [loading, setLoading] = useState(true);
+  const [meetingYearFilter, setMeetingYearFilter] = useState('');
+  const [pdfRangeMode, setPdfRangeMode] = useState<'all' | 'year' | 'custom'>('all');
+  const [reportYear, setReportYear] = useState('');
+  const [reportStartDate, setReportStartDate] = useState('');
+  const [reportEndDate, setReportEndDate] = useState('');
 
   useEffect(() => {
     if (id) {
@@ -75,7 +108,19 @@ export default function SubjectDetail() {
 
   const exportToPDF = async () => {
     try {
+      if (pdfRangeMode === 'year' && !reportYear) {
+        showError('Validasi', 'Pilih tahun rekap terlebih dahulu.');
+        return;
+      }
+      if (pdfRangeMode === 'custom' && (!reportStartDate || !reportEndDate)) {
+        showError('Validasi', 'Lengkapi tanggal awal dan akhir untuk export PDF.');
+        return;
+      }
+
+      const params = buildReportParams(pdfRangeMode, reportYear, reportStartDate, reportEndDate);
+
       const response = await axios.get(`/api/export/pdf/subject/${id}`, {
+        params,
         responseType: 'blob'
       });
       
@@ -96,7 +141,18 @@ export default function SubjectDetail() {
 
   const exportToExcel = async () => {
     try {
+      if (pdfRangeMode === 'year' && !reportYear) {
+        showError('Validasi', 'Pilih tahun rekap terlebih dahulu.');
+        return;
+      }
+      if (pdfRangeMode === 'custom' && (!reportStartDate || !reportEndDate)) {
+        showError('Validasi', 'Lengkapi tanggal awal dan akhir untuk export Excel.');
+        return;
+      }
+
+      const params = buildReportParams(pdfRangeMode, reportYear, reportStartDate, reportEndDate);
       const response = await axios.get(`/api/export/excel/subject/${id}`, {
+        params,
         responseType: 'blob'
       });
       
@@ -140,16 +196,22 @@ export default function SubjectDetail() {
       ? [(subject as any).kelas as string]
       : [];
 
-  const averageFocus = meetings.length > 0 
-    ? meetings.reduce((sum, meeting) => sum + Number(meeting.hasil_akhir_kelas?.fokus || 0), 0) / meetings.length
+  const availableYears = getYearOptions(meetings);
+  const filteredMeetings = meetings.filter((meeting) => {
+    if (!meetingYearFilter) return true;
+    return String(new Date(meeting.tanggal).getFullYear()) === meetingYearFilter;
+  });
+
+  const averageFocus = filteredMeetings.length > 0 
+    ? filteredMeetings.reduce((sum, meeting) => sum + Number(meeting.hasil_akhir_kelas?.fokus || 0), 0) / filteredMeetings.length
     : 0;
 
-  const totalStudents = meetings.length > 0
-    ? Math.max(0, ...meetings.map(m => Number(m.hasil_akhir_kelas?.jumlah_hadir || 0)))
+  const totalStudents = filteredMeetings.length > 0
+    ? Math.max(0, ...filteredMeetings.map(m => Number(m.hasil_akhir_kelas?.jumlah_hadir || 0)))
     : 0;
 
   // Prepare chart data
-  const focusTrendData = meetings
+  const focusTrendData = filteredMeetings
     .map(meeting => ({
       meeting: `M${meeting.pertemuan_ke}`,
       focus: Math.round(Number(meeting.hasil_akhir_kelas?.fokus || 0)),
@@ -159,7 +221,7 @@ export default function SubjectDetail() {
     .sort((a, b) => parseInt(a.meeting.slice(1)) - parseInt(b.meeting.slice(1)));
 
   const classPerformanceData = subjectClasses.map(kelas => {
-    const classMeetings = meetings.filter(m => m.kelas === kelas);
+    const classMeetings = filteredMeetings.filter(m => m.kelas === kelas);
     const avgFocus = classMeetings.length > 0 
       ? classMeetings.reduce((sum, m) => sum + Number(m.hasil_akhir_kelas?.fokus || 0), 0) / classMeetings.length
       : 0;
@@ -213,6 +275,76 @@ export default function SubjectDetail() {
           </motion.button>
         </div>
       </motion.div>
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
+          <h3 className="text-sm font-semibold text-gray-900">Filter Tahun Riwayat</h3>
+          <p className="mt-1 text-xs text-gray-500">Mempengaruhi kartu statistik, grafik, dan riwayat meeting.</p>
+          <div className="mt-4 flex flex-col gap-3 sm:flex-row">
+            <select
+              value={meetingYearFilter}
+              onChange={(e) => setMeetingYearFilter(e.target.value)}
+              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              <option value="">Semua Tahun</option>
+              {availableYears.map((year) => (
+                <option key={year} value={year}>{year}</option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={() => setMeetingYearFilter('')}
+              className="inline-flex items-center justify-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            >
+              Reset
+            </button>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
+          <h3 className="text-sm font-semibold text-gray-900">Rentang Rekap PDF</h3>
+          <p className="mt-1 text-xs text-gray-500">Pilih data rekap yang ingin dimasukkan ke PDF.</p>
+          <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3">
+            <select
+              value={pdfRangeMode}
+              onChange={(e) => setPdfRangeMode(e.target.value as 'all' | 'year' | 'custom')}
+              className="rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              <option value="all">Semua Data</option>
+              <option value="year">Per Tahun</option>
+              <option value="custom">Rentang Tanggal</option>
+            </select>
+            {pdfRangeMode === 'year' && (
+              <select
+                value={reportYear}
+                onChange={(e) => setReportYear(e.target.value)}
+                className="rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              >
+                <option value="">Pilih Tahun</option>
+                {availableYears.map((year) => (
+                  <option key={year} value={year}>{year}</option>
+                ))}
+              </select>
+            )}
+            {pdfRangeMode === 'custom' && (
+              <>
+                <input
+                  type="date"
+                  value={reportStartDate}
+                  onChange={(e) => setReportStartDate(e.target.value)}
+                  className="rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+                <input
+                  type="date"
+                  value={reportEndDate}
+                  onChange={(e) => setReportEndDate(e.target.value)}
+                  className="rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              </>
+            )}
+          </div>
+        </div>
+      </div>
 
       {/* Subject Info Card */}
       <motion.div 
@@ -322,7 +454,7 @@ export default function SubjectDetail() {
             </div>
             <div className="ml-4">
               <p className="text-sm font-medium text-gray-600">Total Meetings</p>
-              <p className="text-2xl font-bold text-gray-900">{meetings.length}</p>
+              <p className="text-2xl font-bold text-gray-900">{filteredMeetings.length}</p>
             </div>
           </div>
         </motion.div>
@@ -487,7 +619,7 @@ export default function SubjectDetail() {
             </motion.button>
           </div>
         </div>
-        {meetings.length > 0 ? (
+        {filteredMeetings.length > 0 ? (
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
@@ -498,10 +630,11 @@ export default function SubjectDetail() {
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Focus Rate</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Attendance</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Detail</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {meetings.slice(0, 10).map((meeting) => {
+                {filteredMeetings.slice(0, 10).map((meeting) => {
                   const focus = Number(meeting.hasil_akhir_kelas?.fokus || 0);
                   const attendance = Number(meeting.hasil_akhir_kelas?.jumlah_hadir || 0);
                   const color =
@@ -537,6 +670,14 @@ export default function SubjectDetail() {
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                       {new Date(meeting.tanggal).toLocaleDateString()}
                     </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm">
+                      <Link
+                        to={`/meetings/${meeting._id}`}
+                        className="inline-flex items-center rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 font-medium text-blue-700 hover:bg-blue-100"
+                      >
+                        Lihat Rekap
+                      </Link>
+                    </td>
                   </tr>
                   );
                 })}
@@ -547,7 +688,7 @@ export default function SubjectDetail() {
           <div className="p-6 text-center">
             <Calendar className="h-12 w-12 text-gray-400 mx-auto mb-4" />
             <h3 className="text-lg font-medium text-gray-900 mb-2">No meetings yet</h3>
-            <p className="text-gray-500">Meetings for this subject will appear here.</p>
+            <p className="text-gray-500">Belum ada riwayat meeting pada filter tahun yang dipilih.</p>
           </div>
         )}
       </motion.div>

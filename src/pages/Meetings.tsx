@@ -35,6 +35,7 @@ export default function Meetings() {
   const [searchTerm, setSearchTerm] = useState('');
   const [filterClass, setFilterClass] = useState('');
   const [filterSubject, setFilterSubject] = useState('');
+  const [filterYear, setFilterYear] = useState('');
   const [showFilters, setShowFilters] = useState(false);
 
   useEffect(() => {
@@ -72,12 +73,20 @@ export default function Meetings() {
                          meeting.topik.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesClass = !filterClass || meeting.kelas === filterClass;
     const matchesSubject = !filterSubject || meeting.mata_kuliah === filterSubject;
+    const meetingYear = new Date(meeting.tanggal).getFullYear();
+    const matchesYear = !filterYear || String(meetingYear) === filterYear;
     
-    return matchesSearch && matchesClass && matchesSubject;
+    return matchesSearch && matchesClass && matchesSubject && matchesYear;
   });
 
   const uniqueClasses = [...new Set(meetings.map(m => m.kelas))];
   const uniqueSubjects = [...new Set(meetings.map(m => m.mata_kuliah))];
+  const uniqueYears = [...new Set(
+    meetings
+      .map((meeting) => new Date(meeting.tanggal).getFullYear())
+      .filter((year) => !Number.isNaN(year))
+      .map((year) => String(year))
+  )].sort((a, b) => Number(b) - Number(a));
 
   if (loading) {
     return (
@@ -122,7 +131,7 @@ export default function Meetings() {
               <Filter className="h-4 w-4 mr-2 text-blue-500" />
               Advanced Filters
             </h3>
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
               <div className="relative">
                 <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                   <Search className="h-5 w-5 text-gray-400" />
@@ -158,11 +167,23 @@ export default function Meetings() {
                 ))}
               </select>
 
+              <select
+                value={filterYear}
+                onChange={(e) => setFilterYear(e.target.value)}
+                className="block w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+              >
+                <option value="">All Years</option>
+                {uniqueYears.map((year) => (
+                  <option key={year} value={year}>{year}</option>
+                ))}
+              </select>
+
               <button
                 onClick={() => {
                   setSearchTerm('');
                   setFilterClass('');
                   setFilterSubject('');
+                  setFilterYear('');
                 }}
                 className="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
               >

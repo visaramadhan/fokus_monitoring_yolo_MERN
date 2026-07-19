@@ -12,6 +12,24 @@ interface LoginForm {
   password: string;
 }
 
+const DEBUG_SERVER_URL = 'http://127.0.0.1:7777/event';
+
+async function reportDebugEvent(payload: Record<string, unknown>) {
+  try {
+    await fetch(DEBUG_SERVER_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessionId: 'login-failed',
+        runId: 'pre-fix',
+        source: 'client',
+        ...payload,
+        timestamp: new Date().toISOString(),
+      }),
+    });
+  } catch {}
+}
+
 export default function Login() {
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -24,10 +42,39 @@ export default function Login() {
   const onSubmit = async (data: LoginForm) => {
     setIsLoading(true);
     try {
+      // #region debug-point A:login-submit
+      await reportDebugEvent({
+        hypothesisId: 'A',
+        message: '[DEBUG] login.submit',
+        data: {
+          usernameLength: data.username?.length || 0,
+          passwordProvided: Boolean(data.password),
+        },
+      });
+      // #endregion debug-point A:login-submit
       await login(data.username, data.password);
+      // #region debug-point D:login-client-success
+      await reportDebugEvent({
+        hypothesisId: 'D',
+        message: '[DEBUG] login.client.success',
+        data: {
+          navigateTo: '/dashboard',
+        },
+      });
+      // #endregion debug-point D:login-client-success
       showSuccess('Berhasil', 'Login berhasil.');
       navigate('/dashboard');
     } catch (error: any) {
+      // #region debug-point D:login-client-error
+      await reportDebugEvent({
+        hypothesisId: 'D',
+        message: '[DEBUG] login.client.error',
+        data: {
+          message: error?.message || 'Login gagal.',
+          stack: error?.stack || null,
+        },
+      });
+      // #endregion debug-point D:login-client-error
       showError('Gagal Login', error.message || 'Login gagal.');
     } finally {
       setIsLoading(false);

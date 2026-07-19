@@ -1,429 +1,604 @@
-# Fokus Monitoring YOLO (MERN + Roboflow)
+# Fokus Monitoring YOLO MERN
 
-Sistem monitoring fokus mahasiswa berbasis:
-- Frontend: React + Vite (TypeScript)
-- Backend API: Node.js + Express + MongoDB (Mongoose)
-- AI Service:
-  - Roboflow Hosted Workflow (utama)
-  - Roboflow WebRTC (utama untuk webcam lokal real-time)
-  - Python inference runner (legacy / opsional)
+Sistem ini adalah aplikasi monitoring fokus siswa/mahasiswa berbasis kamera yang menggabungkan:
+- frontend `React + Vite + TypeScript`
+- backend `Node.js + Express + MongoDB`
+- AI service `Python + FastAPI + Gradio + MediaPipe/OpenCV`
 
-Port default saat development:
-- Frontend: http://localhost:5173
-- Backend API: http://localhost:5002
-- Python inference runner (opsional): http://localhost:5001
+Fungsi utamanya adalah mengelola data akademik, menjalankan live monitoring dari kamera browser, menyimpan hasil deteksi fokus ke database, lalu menampilkan rekap dan export laporan dalam format `Excel` dan `PDF`.
 
-## Arsitektur Singkat
+## Ringkasan Sistem
 
-1) Saat development, frontend memanggil API backend melalui proxy Vite:
-- `/api/*` → `http://127.0.0.1:5002/*`
-- `/flask/*` → `http://127.0.0.1:5001/*`
+Arsitektur proyek dibagi menjadi 4 lapisan utama:
 
-2) Saat production di Vercel, frontend dan backend bisa berjalan dalam **satu project yang sama**:
-- Frontend build dari Vite
-- Backend Node/Express diekspos lewat function `api/[...route].js`
-- Frontend tetap memanggil `/api/*` pada domain yang sama
+1. `Frontend`
+   - Menampilkan UI login, dashboard, master data, jadwal, monitoring, dan rekap.
+   - Mengakses kamera browser dengan `getUserMedia`.
+   - Mengirim request ke backend dengan `axios`.
 
-3) Live Monitoring:
-- Video tetap berjalan di elemen `<video>`
-- Mode realtime (opsi A): browser webcam → backend Node proxy → Roboflow WebRTC worker
-- Mode snapshot per detik (opsi B): browser capture frame → backend Node → FastAPI proxy → Roboflow Model API
-- Workflow Hosted API tetap tersedia untuk kebutuhan workflow image (opsional)
-- Python inference runner lokal adalah jalur lama dan tidak lagi menjadi alur utama
-- Bounding box / hasil deteksi dirender di sisi frontend
+2. `Backend API`
+   - Menangani autentikasi JWT, CRUD data akademik, dashboard, export, dan orkestrasi monitoring.
+   - Menjadi penghubung antara frontend, database MongoDB, dan AI service.
 
-4) Database:
-- Data monitoring tersimpan sebagai data **Pertemuan** dan (untuk Live Monitoring) data **Session Records**
-- Jadwal (Schedule) berubah status `scheduled → ongoing → completed`
+3. `AI Service`
+   - Menerima frame kamera dalam bentuk base64.
+   - Menjalankan analisis fokus per frame.
+   - Menghasilkan `metrics`, `annotated image`, `record events`, dan `summary`.
 
-## Kebutuhan (Prerequisites)
+4. `Database`
+   - Menyimpan data user, kelas, mata kuliah, jadwal, sesi live, dan hasil akhir monitoring pada koleksi `Pertemuan`.
+
+## Port Development
+
+- Frontend: `http://localhost:5173`
+- Backend Express: `http://localhost:5002`
+- AI Service Python: `http://localhost:7861`
+
+## Cara Kerja Singkat
+
+1. User login dari frontend.
+2. Frontend mengakses backend melalui `/api/*`.
+3. Vite mem-proxy `/api/*` ke backend Express `5002`.
+4. Saat live monitoring:
+   - browser membuka kamera dengan `navigator.mediaDevices.getUserMedia`
+   - video ditampilkan lokal di elemen `<video>`
+   - frontend mengambil snapshot frame dari `<canvas>`
+   - frame dikirim ke backend `/api/ai-service/focus/analyze-frame`
+   - backend meneruskan ke AI service Python
+   - AI service mengembalikan hasil deteksi dan preview beranotasi
+5. Saat monitoring dihentikan:
+   - AI service mengembalikan `events` dan `summary`
+   - backend menyimpan rekap ke MongoDB sebagai data `Pertemuan`
+   - jadwal diubah dari `scheduled/ongoing` menjadi `completed`
+
+## Fitur Utama
+
+- Login dan autentikasi JWT
+- Role `admin` dan `dosen`
+- Dashboard rekap performa monitoring
+- Manajemen `Users`
+- Manajemen `Kelas`
+- Manajemen `Mata Kuliah`
+- Manajemen `Jadwal`
+- Halaman `Meetings` dan `Meeting Detail`
+- Live Monitoring dengan kamera browser
+- Preview hasil AI langsung di layar
+- Timestamp table / record events selama monitoring
+- Rekap hasil monitoring per pertemuan
+- Rekap per kelas
+- Rekap per mata kuliah
+- Export `Excel`
+- Export `PDF`
+- Filter tahun pada halaman list dan rekap
+- Pilihan rentang rekap untuk export laporan
+
+## Halaman Yang Tersedia
+
+- `Login`
+- `Dashboard`
+- `Users`
+- `Classes`
+- `Subjects`
+- `Jadwal`
+- `Meetings`
+- `Meeting Detail`
+- `Class Detail`
+- `Subject Detail`
+- `Live Monitoring`
+- `Manual Monitoring`
+- `Profile`
+- `Settings`
+
+## Struktur Folder Penting
+
+```text
+fokus_monitoring_yolo_MERN/
+├── src/                     # frontend React + Vite
+├── server/
+│   ├── ai-service/          # AI service Python
+│   ├── models/              # model Mongoose
+│   ├── routes/              # route Express
+│   ├── uploads/             # file upload / model
+│   ├── app.js               # init express app
+│   └── server.js            # bootstrap server backend
+├── api/                     # entry serverless / integrasi deploy
+├── README.md
+└── package.json
+```
+
+## Kebutuhan Sistem
 
 ### Wajib
-- Node.js (disarankan LTS terbaru)
-- npm
-- Python 3.10+ (disarankan 3.10/3.11)
-- MongoDB lokal (atau MongoDB Atlas)
 
-### Tambahan (untuk AI)
-- Library Python pada `server/flask_server/requirements.txt`
-- Model YOLO weights `.pt` (lihat bagian “Model YOLO”)
+- `Node.js` versi LTS terbaru
+- `npm`
+- `Python` 3.10 atau 3.11
+- `MongoDB` lokal atau `MongoDB Atlas`
+- Browser modern yang mendukung `getUserMedia`
 
-## Setup (Langkah Teknis)
+### Disarankan
 
-### 1) Clone repo
+- Windows 10/11
+- Kamera webcam aktif
+- Koneksi internet stabil jika menggunakan MongoDB Atlas
+
+## Library Yang Digunakan
+
+### Frontend
+
+Dependensi utama dari [package.json](file:///c:/Users/LENOVO/Documents/fokus_monitoring_yolo_MERN/package.json):
+
+- `react`
+- `react-dom`
+- `react-router-dom`
+- `axios`
+- `framer-motion`
+- `lucide-react`
+- `react-hook-form`
+- `recharts`
+- `jwt-decode`
+- `jspdf`
+- `jspdf-autotable`
+- `xlsx`
+
+Tooling frontend:
+
+- `vite`
+- `typescript`
+- `tailwindcss`
+- `eslint`
+
+### Backend
+
+Dependensi utama dari [server/package.json](file:///c:/Users/LENOVO/Documents/fokus_monitoring_yolo_MERN/server/package.json):
+
+- `express`
+- `mongoose`
+- `jsonwebtoken`
+- `bcryptjs`
+- `axios`
+- `cors`
+- `dotenv`
+- `exceljs`
+- `pdfkit`
+- `multer`
+- `mongodb-memory-server`
+- `check-disk-space`
+
+### AI Service Python
+
+Dependensi utama dari [requirements.txt](file:///c:/Users/LENOVO/Documents/fokus_monitoring_yolo_MERN/server/ai-service/requirements.txt):
+
+- `gradio`
+- `mediapipe`
+- `opencv-python`
+- `numpy`
+- `scikit-learn`
+- `joblib`
+- `openpyxl`
+
+Tambahan runtime:
+
+- `fastapi`
+- `uvicorn`
+- `pydantic`
+
+## Setup Environment
+
+Buat file `.env` di folder `server/`.
+
+Contoh minimal:
+
+```env
+PORT=5002
+MONGODB_URI=mongodb://127.0.0.1:27017/focus_monitoring
+JWT_SECRET=isi_dengan_secret_yang_aman
+AI_SERVICE_URL=http://127.0.0.1:7861
+```
+
+Contoh yang umum dipakai pada proyek ini:
+
+```env
+PORT=5002
+MONGODB_URI=mongodb+srv://username:password@cluster.mongodb.net/student-focus-monitoring?retryWrites=true&w=majority
+JWT_SECRET=rahasia_negara_123
+AI_SERVICE_URL=http://127.0.0.1:7861
+INFERENCE_URL=http://127.0.0.1:5001
+EXPRESS_URL=http://127.0.0.1:5002
+INFERENCE_PORT=5001
+USE_ROBOFLOW_WORKFLOW=true
+```
+
+Catatan:
+
+- `AI_SERVICE_URL` harus sesuai dengan port AI service Python.
+- Jika backend tidak bisa connect ke DB, API akan gagal sampai database siap.
+- Untuk development lokal, MongoDB Atlas lebih praktis jika tidak menjalankan MongoDB lokal.
+
+## Cara Install
+
+### 1. Clone Repository
 
 ```bash
 git clone https://github.com/visaramadhan/fokus_monitoring_yolo_MERN.git
-cd fokus_monitoring_yolo_MERN/project
+cd fokus_monitoring_yolo_MERN
 ```
 
-### 2) Install dependency frontend + backend (Node)
+### 2. Install Dependensi Frontend
 
-Di folder `project`:
+Di root project:
 
 ```bash
 npm install
 ```
 
-Ini akan menginstall dependency frontend dan juga dependency backend (server) saat menjalankan script dev.
+### 3. Install Dependensi Backend
 
-### 3) Siapkan MongoDB
-
-Default backend akan mencoba konek ke:
-- `mongodb://127.0.0.1:27017/focus_monitoring`
-
-Jika ingin memakai MongoDB Atlas / custom URI, set environment variable:
-- `MONGODB_URI`
-
-Jika tidak ada MongoDB yang bisa diakses, backend tidak akan melayani API (akan merespons 503 “Database initializing…”).
-
-### 4) Siapkan Environment Variables (Backend)
-
-Backend memiliki fallback untuk beberapa variabel, tetapi untuk implementasi yang rapi disarankan membuat `.env` di folder:
-
-`project/server/.env`
-
-Minimal yang disarankan:
-
-```env
-JWT_SECRET=isi_dengan_secret_yang_aman
-MONGODB_URI=mongodb://127.0.0.1:27017/focus_monitoring
-```
-
-Opsional:
-
-```env
-# Seed data dummy (default: false)
-ENABLE_DUMMY_DATA=false
-
-# Auto purge saat server start (default: false)
-PURGE_ALL_DATA_ON_START=false
-PURGE_DUMMY_DATA_ON_START=false
-
-# Fallback Mongo in-memory (default: false)
-ENABLE_IN_MEMORY=false
-MONGOMS_REQUIRED_FREE_BYTES=800000000
-
-# Live pipeline / inference runner
-INFERENCE_URL=http://127.0.0.1:5001
-EXPRESS_URL=http://127.0.0.1:5002
-INFERENCE_PORT=5001
-ROBOFLOW_API_KEY=isi_dengan_api_key
-ROBOFLOW_API_URL=https://serverless.roboflow.com
-ROBOFLOW_API_KEY=isi_dengan_api_key
-ROBOFLOW_WORKSPACE_NAME=visa-ramadhan
-ROBOFLOW_WORKFLOW_ID=fokusdetection-vfocus-rdwkd-logic
-ROBOFLOW_IMAGE_INPUT=image
-ROBOFLOW_REQUESTED_PLAN=webrtc-gpu-medium
-ROBOFLOW_REQUESTED_REGION=us
-ROBOFLOW_PROCESSING_TIMEOUT_SEC=3600
-ROBOFLOW_STREAM_OUTPUT=output_image
-ROBOFLOW_DATA_OUTPUT=focus_monitoring_json,frame_time,people
-ROBOFLOW_WORKFLOW_PARAMETERS_JSON={}
-
-# Hanya untuk mode pipeline Python lama / lokal
-ROBOFLOW_MODEL_ID=project/version
-USE_ROBOFLOW_WORKFLOW=true
-```
-
-Catatan:
-- Dummy seeding default **nonaktif**. Aktifkan hanya jika dibutuhkan untuk demo awal.
-- Untuk production/Vercel, gunakan MongoDB Atlas / URI database publik yang bisa diakses dari cloud.
-- `ROBOFLOW_WORKFLOW_PARAMETERS_JSON` dipakai untuk mengirim parameter workflow image/WebRTC tanpa hard-code di frontend/backend.
-- Output image dari workflow akan disimpan ke `server/uploads/roboflow/` dan dilayani lewat `/uploads/...`, bukan dikembalikan sebagai base64 besar di response.
-
-### 5) Setup Flask (YOLO)
-
-Masuk ke folder Flask:
+Masuk ke folder backend:
 
 ```bash
-cd server/flask_server
+cd server
+npm install
+cd ..
 ```
 
-Buat virtual environment (disarankan):
+### 4. Install Dependensi AI Service Python
+
+Masuk ke folder AI service:
 
 ```bash
+cd server/ai-service
 python -m venv .venv
 ```
 
-Aktifkan venv:
-- Windows PowerShell:
+Aktifkan virtual environment:
+
+Windows PowerShell:
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
 ```
+
+Jika muncul error `Activate.ps1 is not recognized`, artinya virtual environment belum terbentuk di folder `server/ai-service` atau terminal sedang berada di folder yang salah.
+
+Pastikan urutannya seperti ini:
+
+```powershell
+cd server/ai-service
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+Catatan penting:
+
+- Virtual environment lama yang ada di `server/fastapi_server/.venv` adalah sisa struktur lama dan bukan environment utama untuk service yang aktif sekarang.
+- Jika tidak ingin memakai virtual environment, Anda tetap bisa menjalankan AI service dengan Python global setelah menginstall dependency yang dibutuhkan.
 
 Install dependency:
 
 ```bash
 pip install -r requirements.txt
+pip install fastapi uvicorn pydantic
 ```
 
-Jalankan Flask:
+Kembali ke root project setelah selesai.
+
+## Cara Menjalankan Sistem
+
+Sistem dijalankan dengan 3 terminal terpisah.
+
+### Terminal 1: Backend Express
 
 ```bash
-python app.py
+cd server
+npm run start
 ```
 
-Health check:
-- http://localhost:5001/health
-
-### 5b) Setup FastAPI (Roboflow Model Proxy)
-
-FastAPI dipakai untuk membungkus Roboflow Model API (endpoint `https://serverless.roboflow.com/<project>/<version>`).
-
-1. Masuk ke folder FastAPI:
+Atau untuk mode watch:
 
 ```bash
-cd server/fastapi_server
-```
-
-2. Buat virtual environment (disarankan):
-
-```bash
-python -m venv .venv
-```
-
-3. Aktifkan venv:
-- Windows PowerShell:
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-```
-
-4. Install dependency:
-
-```bash
-pip install -r requirements.txt
-```
-
-5. Pastikan env di `project/server/.env` sudah ada:
-- `ROBOFLOW_API_URL=https://serverless.roboflow.com`
-- `ROBOFLOW_API_KEY=...`
-- `ROBOFLOW_MODEL_ID=<project>/<version>` (contoh: `focus-detection/1`)
-- Atau jika memakai Workflow API seperti contoh:
-  - `ROBOFLOW_WORKFLOW_WORKSPACE=sastyus-workspace`
-  - `ROBOFLOW_WORKFLOW_ID=general-segmentation-api-2`
-  - `ROBOFLOW_WORKFLOW_CLASSES=fokus, tidak fokus`
-- `FASTAPI_URL=http://127.0.0.1:8000` (untuk backend Node, opsional)
-
-6. Jalankan FastAPI:
-
-```bash
-uvicorn main:app --host 127.0.0.1 --port 8000
-```
-
-Endpoint:
-- http://127.0.0.1:8000/health
-- http://127.0.0.1:8000/detect
-
-### 6) Model YOLO (.pt)
-
-Flask akan mencoba memuat model default dari folder:
-
-`project/server/uploads/models/`
-
-Pastikan ada file weights `.pt` di folder tersebut. Implementasi saat ini memilih salah satu kandidat default (lihat fungsi `_select_default_object_model_path()` pada `server/flask_server/app.py`).
-
-Rekomendasi untuk implementasi cepat:
-- Letakkan file model `.pt` di `project/server/uploads/models/`
-- Jika nama file tidak sama dengan kandidat default, ubah kandidat path di `app.py` agar menunjuk ke model yang kamu pakai.
-
-### 7) Jalankan sistem (Development)
-
-Terminal A (Node: backend + frontend sekaligus):
-
-```bash
-cd project
+cd server
 npm run dev
 ```
 
-Terminal B (Flask YOLO):
+### Terminal 2: Frontend React
 
 ```bash
-cd project/server/flask_server
-python app.py
-```
-
-Buka:
-- Frontend: http://localhost:5173
-
-Terminal C (FastAPI Roboflow Model Proxy, jika memakai mode snapshot):
-
-```bash
-cd project/server/fastapi_server
-uvicorn main:app --host 127.0.0.1 --port 8000
-```
-
-### 8) Roboflow Webcam / Workflow Smoke Test
-
-Untuk validasi integrasi Roboflow image workflow:
-
-1. Jalankan smoke test:
-
-```bash
-cd project/server
-npm run smoke:roboflow
-```
-
-2. Pastikan env berikut valid di `project/server/.env`:
-- `ROBOFLOW_API_KEY`
-- `ROBOFLOW_API_URL`
-- `ROBOFLOW_WORKSPACE_NAME`
-- `ROBOFLOW_WORKFLOW_ID`
-- `ROBOFLOW_IMAGE_INPUT`
-- `ROBOFLOW_WORKFLOW_PARAMETERS_JSON` (opsional)
-
-Catatan penting:
-- smoke test akan menganggap integrasi valid bila:
-  - workflow mengembalikan response sukses berbentuk list dengan output keys, atau
-  - workflow mengembalikan structured workflow error yang detailnya bisa ditindaklanjuti
-
-### 8b) Roboflow Model API Smoke Test
-
-Untuk validasi koneksi langsung ke Roboflow Model API (tanpa FastAPI):
-
-```bash
-cd project/server
-npm run smoke:roboflow-model
-```
-
-### 9) Webcam lokal dengan Roboflow WebRTC
-
-Live Monitoring sekarang diarahkan ke jalur WebRTC:
-
-1. Jalankan backend:
-
-```bash
-cd project/server
-npm run dev
-```
-
-2. Jalankan frontend:
-
-```bash
-cd project
 npm run client
 ```
 
-3. Login, buka halaman Live Monitoring, aktifkan kamera lokal, lalu klik `Start Monitoring`.
-
-Catatan penting:
-- status WebRTC dibaca dari backend `/roboflow/webrtc/status`, sehingga frontend tidak lagi mengunci `workspace`, `workflow`, atau output names secara manual
-- jika workflow Roboflow sendiri gagal di serverless (mis. step Gemini error), pesan error detail akan diteruskan ke UI
-
-## Alur Monitoring (Singkat)
-
-### Manual Monitoring
-- Admin: pilih Dosen → Mata Kuliah → Kelas → Jadwal (Hari Ini) → buat layout → Start → Stop → Save to Database
-- Dosen: pilih Mata Kuliah → Kelas → Jadwal (Hari Ini) → buat layout → Start → Stop → Save to Database
-
-### Live Monitoring
-- Admin: pilih Dosen → Mata Kuliah → Kelas → Jadwal (Hari Ini) → Start → Stop & Export
-- Dosen: pilih Mata Kuliah → Kelas → Jadwal (Hari Ini) → Start → Stop & Export
-
-Aturan jadwal:
-- Monitoring hanya boleh dilakukan pada tanggal jadwal
-- Saat start: jadwal jadi `ongoing` (hilang dari list “available”)
-- Saat selesai/save/export: jadwal jadi `completed` (tidak muncul lagi)
-
-## Lokasi Data Hasil
-
-Setelah Save (Manual) atau Stop & Export (Live), data akan terlihat di:
-- Meetings (rekap global pertemuan)
-- Detail Mata Kuliah (rekap per mata kuliah)
-- Detail Kelas (rekap per kelas)
-- Halaman Jadwal (status berubah scheduled/ongoing/completed)
-
-## Deploy Vercel (Satu Repo, FE + BE)
-
-Project ini sudah disesuaikan agar frontend dan backend Node bisa dideploy dalam **satu project Vercel** dari repo yang sama:
-
-- frontend: React + Vite
-- backend: Express melalui `api/[...route].js`
-- rewrite SPA: `vercel.json`
-
-### Build Settings
-
-Gunakan project root:
-
-```text
-project
-```
-
-Build command:
+Atau jalankan frontend + backend sekaligus dari root:
 
 ```bash
-npm run build
-```
-
-Output directory:
-
-```text
-dist
-```
-
-### Environment Variables Vercel
-
-Wajib:
-
-```env
-MONGODB_URI=mongodb+srv://...
-JWT_SECRET=isi_dengan_secret_yang_aman
-```
-
-Disarankan:
-
-```env
-ENABLE_DUMMY_DATA=false
-ENABLE_IN_MEMORY=false
-```
-
-Jangan isi jika ingin frontend memakai same-origin API pada project Vercel yang sama:
-
-```env
-VITE_API_BASE_URL=
+npm run dev
 ```
 
 Catatan:
-- jika `VITE_API_BASE_URL` diisi placeholder/salah, browser bisa error `ERR_NAME_NOT_RESOLVED`
-- jika frontend memanggil API domain yang salah, request bisa berakhir `404` atau `405`
-- backend Express pada Vercel tetap membutuhkan `MONGODB_URI` yang valid
 
-### Batasan di Vercel
+- `npm run dev` di root menjalankan frontend dan backend.
+- AI service tetap harus dijalankan terpisah.
 
-Yang cocok:
-- auth/login/register
-- dashboard
-- users / classes / subjects / meetings / jadwal
-- export dan API CRUD biasa
+### Terminal 3: AI Service Python
 
-Yang tidak cocok dijalankan penuh di Vercel serverless:
-- Python inference runner long-running
-- kamera live processing lokal
-- proses live monitoring yang butuh worker persisten
+```bash
+cd server/ai-service
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python app.py
+```
 
-Untuk fitur live inference, gunakan service terpisah atau jalankan inference runner secara lokal / pada server terpisah.
+Alternatif:
+
+```bash
+cd server/ai-service
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+uvicorn app:app --host 0.0.0.0 --port 7861
+```
+
+Jika `.venv` sudah pernah dibuat sebelumnya, langkah `python -m venv .venv` cukup dijalankan sekali saja.
+
+## Cara Mengecek Bahwa Semua Service Sudah Aktif
+
+- Frontend aktif: buka `http://localhost:5173`
+- Backend aktif: buka `http://localhost:5002/health`
+- Status database backend: buka `http://localhost:5002/db/status`
+- AI service aktif: buka `http://localhost:7861/health`
+- UI Gradio AI service: buka `http://localhost:7861/gradio`
+
+## Akun Login Default
+
+Untuk development, akun yang biasa tersedia:
+
+- `admin` / `admin123`
+- `dosen1` / `NIP dosen`
+
+Jika seed data berbeda di database Anda, sesuaikan dengan data yang tersimpan.
+
+## Cara Menggunakan Sistem
+
+### 1. Login
+
+1. Buka aplikasi frontend.
+2. Masukkan username dan password.
+3. Setelah login, sistem akan mengarahkan ke dashboard.
+
+### 2. Kelola Data Master
+
+Sebelum monitoring, pastikan data berikut sudah tersedia:
+
+- `Users`
+- `Kelas`
+- `Mata Kuliah`
+- `Jadwal`
+
+Urutan yang disarankan:
+
+1. Tambahkan user dosen
+2. Tambahkan kelas
+3. Tambahkan mata kuliah
+4. Buat jadwal sesuai dosen, kelas, dan mata kuliah
+
+### 3. Jalankan Live Monitoring
+
+1. Masuk ke halaman `Live Monitoring`
+2. Jika login sebagai `admin`, pilih dosen
+3. Pilih kelas
+4. Pilih jadwal yang tersedia untuk hari ini
+5. Pilih kamera
+6. Klik `Buka Kamera`
+7. Pastikan preview kamera tampil
+8. Klik `Mulai Monitoring`
+9. Sistem mulai mengirim frame ke AI service
+10. Lihat:
+   - preview hasil AI
+   - jumlah orang
+   - focused / not focused
+   - timestamp table
+11. Klik `Selesaikan Monitoring`
+12. Sistem menyimpan hasil ke database dan menyiapkan rekap
+
+### 4. Unduh Laporan
+
+Setelah monitoring selesai:
+
+- klik `Unduh Excel` pada halaman monitoring, atau
+- buka halaman detail kelas / mata kuliah / meeting lalu export `PDF` atau `Excel`
+
+### 5. Lihat Rekap
+
+Rekap dapat dilihat dari:
+
+- `Meetings`
+- `Meeting Detail`
+- `Class Detail`
+- `Subject Detail`
+- `Jadwal`
+- `Dashboard`
+
+## Aturan Monitoring
+
+- Kamera harus aktif sebelum monitoring dimulai
+- Jadwal harus dipilih terlebih dahulu
+- Jadwal yang bisa dimonitor hanya jadwal yang valid untuk hari ini
+- Saat monitoring dimulai, status jadwal berubah menjadi `ongoing`
+- Saat monitoring selesai, status jadwal berubah menjadi `completed`
+- Hasil monitoring disimpan ke `Pertemuan`
+
+## Fitur Filter Dan Rekap
+
+Sistem saat ini sudah mendukung:
+
+- filter tahun pada halaman `Classes`
+- filter tahun pada halaman `Subjects`
+- filter tahun pada halaman `Meetings`
+- filter tahun pada halaman `Jadwal`
+- filter tahun / rentang rekap pada `Dashboard`
+- rentang rekap `Semua Data`, `Per Tahun`, dan `Rentang Tanggal` untuk export laporan tertentu
+
+## Export Yang Tersedia
+
+- `Excel` dari hasil live monitoring
+- `PDF` rekap kelas
+- `PDF` rekap mata kuliah
+- `Excel` rekap kelas
+- `Excel` rekap mata kuliah
+
+Beberapa export mendukung:
+
+- `Semua Data`
+- `Per Tahun`
+- `Rentang Tanggal`
+
+## Alur Data Monitoring
+
+Berikut alur data live monitoring:
+
+1. Kamera dibuka di browser
+2. Video tampil di elemen `<video>`
+3. Frontend mengambil frame dengan `<canvas>`
+4. Frame diubah menjadi base64 JPEG
+5. Frame dikirim ke backend `/api/ai-service/focus/analyze-frame`
+6. Backend meneruskan ke AI service Python
+7. AI service menganalisis frame
+8. AI service mengembalikan:
+   - `metrics`
+   - `annotated image`
+   - `people count`
+   - `status fokus`
+9. Frontend menampilkan hasil secara real-time
+10. Saat stop, backend menyimpan hasil akhir ke MongoDB
+
+## Cara Kerja Kamera
+
+Sistem kamera memakai API browser native:
+
+- daftar kamera diambil dengan `navigator.mediaDevices.enumerateDevices()`
+- akses kamera dilakukan dengan `navigator.mediaDevices.getUserMedia()`
+- stream kamera ditempel ke elemen `<video>`
+- frame video digambar ke `<canvas>` secara berkala
+- hasil canvas dikirim ke AI service untuk dianalisis
+
+Artinya:
+
+- video asli tetap lokal di browser
+- yang dikirim ke AI adalah snapshot frame, bukan stream mentah penuh
+
+## Daftar Endpoint Penting
+
+### Backend
+
+- `GET /health`
+- `GET /db/status`
+- `POST /auth/login`
+- `GET /dashboard/overview`
+- `GET /kelas`
+- `GET /mata-kuliah`
+- `GET /jadwal`
+- `GET /pertemuan`
+- `POST /live-monitoring/start`
+- `POST /live-monitoring/stop/:sessionId`
+
+### AI Service
+
+- `GET /health`
+- `POST /focus/analyze-frame`
+- `POST /focus/record/start`
+- `POST /focus/record/stop`
+- `GET /focus/record/status`
+- `GET /focus/record/export`
+- `GET /gradio`
 
 ## Troubleshooting
 
-- Flask status “disconnected” di Live Monitoring:
-  - Pastikan Flask berjalan di port 5001
-  - Buka `http://localhost:5001/health`
-- API error 503 “Database initializing…”:
-  - Pastikan MongoDB berjalan atau `MONGODB_URI` valid
-  - Cek `http://localhost:5002/db/status`
-- Tidak ada jadwal muncul saat monitoring:
-  - Jadwal yang muncul hanya status `scheduled` dan tanggal “hari ini”
-  - Pastikan memilih dosen (admin) lalu mata kuliah dan kelas terlebih dulu
-- Vercel `ERR_NAME_NOT_RESOLVED` pada `/api/...`:
-  - Pastikan `VITE_API_BASE_URL` tidak diisi placeholder seperti `url_backend_kamu`
-  - Jika FE dan BE satu project Vercel, kosongkan `VITE_API_BASE_URL`
-- Vercel `404` / `405` pada endpoint API:
-  - Pastikan deploy sudah memakai file `vercel.json`
-  - Pastikan request menuju `/api/...` pada domain project yang sama
-  - Pastikan backend function berhasil build dan `MONGODB_URI` valid
-- Roboflow WebRTC / Hosted API gagal walau koneksi hidup:
-  - Jalankan `cd server && npm run smoke:roboflow`
-  - Jika hasil menunjukkan `structured_error`, artinya request sudah sampai ke workflow, tetapi ada kegagalan di definisi workflow Roboflow
-  - Contoh yang teramati saat ini: step `scene_activity_check` dari Gemini berhenti karena `max_tokens` di workflow terlalu kecil
+### Frontend tidak bisa dibuka
+
+- Pastikan frontend berjalan di `5173`
+- jalankan `npm run client`
+
+### Backend error atau API gagal
+
+- pastikan backend berjalan di `5002`
+- cek `http://localhost:5002/health`
+
+### Database belum siap
+
+- cek `http://localhost:5002/db/status`
+- pastikan `MONGODB_URI` valid
+- pastikan koneksi internet stabil jika memakai MongoDB Atlas
+
+### AI service tidak merespons
+
+- pastikan AI service berjalan di `7861`
+- cek `http://localhost:7861/health`
+- pastikan `AI_SERVICE_URL` pada `.env` backend sesuai
+
+### Kamera tidak muncul
+
+- izinkan akses kamera pada browser
+- cek apakah kamera sedang dipakai aplikasi lain
+- refresh halaman lalu buka kamera kembali
+
+### Jadwal tidak bisa dipilih
+
+- hanya jadwal valid yang bisa dimonitor
+- jadwal lama akan tampil sebagai `Done`
+- jadwal masa depan tampil pudar dan tidak bisa dipilih
+
+### Export gagal
+
+- pastikan backend aktif
+- pastikan data monitoring sudah tersimpan
+- ulangi setelah monitoring dihentikan dengan benar
+
+## Catatan Deploy
+
+Untuk development lokal, jalankan frontend, backend, dan AI service secara terpisah.
+
+Untuk deploy production:
+
+- frontend dan backend dapat digabung dalam satu repo
+- AI service Python sebaiknya dijalankan sebagai service terpisah
+- pastikan database production memakai MongoDB Atlas atau database yang dapat diakses publik
+
+## Ringkas Perintah Penting
+
+Install frontend:
+
+```bash
+npm install
+```
+
+Install backend:
+
+```bash
+cd server
+npm install
+```
+
+Jalankan frontend:
+
+```bash
+npm run client
+```
+
+Jalankan frontend + backend:
+
+```bash
+npm run dev
+```
+
+Jalankan backend saja:
+
+```bash
+cd server
+npm run start
+```
+
+Jalankan AI service:
+
+```bash
+cd server/ai-service
+.\.venv\Scripts\Activate.ps1
+python app.py
+```

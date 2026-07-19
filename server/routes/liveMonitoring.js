@@ -5,6 +5,7 @@ import axios from 'axios';
 import LiveSession from '../models/LiveSession.js';
 import Schedule from '../models/Schedule.js';
 import Kelas from '../models/Kelas.js';
+import Pertemuan from '../models/Pertemuan.js';
 import { auth } from '../middleware/auth.js';
 import { v4 as uuidv4 } from 'uuid';
 import mongoose from 'mongoose';
@@ -19,6 +20,100 @@ function toObjectIdOrNull(value) {
   if (!raw) return null;
   if (!mongoose.Types.ObjectId.isValid(String(raw))) return null;
   return new mongoose.Types.ObjectId(String(raw));
+}
+
+function toDateOrNow(value) {
+  const next = value ? new Date(value) : new Date();
+  return Number.isNaN(next.getTime()) ? new Date() : next;
+}
+
+function normalizeSummaryRows(summaryRows = []) {
+  if (!Array.isArray(summaryRows)) return [];
+  return summaryRows.map((row, index) => {
+    if (Array.isArray(row)) {
+      return {
+        id: String(row?.[0] ?? `person-${index + 1}`),
+        label: String(row?.[1] ?? `Person ${index + 1}`),
+        focused: Number(row?.[2] ?? 0),
+        not_focused: Number(row?.[3] ?? 0),
+        total: Number(row?.[4] ?? 0),
+        first_seen: String(row?.[5] ?? ''),
+        last_seen: String(row?.[6] ?? ''),
+      };
+    }
+    return {
+      id: String(row?.id ?? `person-${index + 1}`),
+      label: String(row?.label ?? `Person ${index + 1}`),
+      focused: Number(row?.focused ?? 0),
+      not_focused: Number(row?.notFocused ?? row?.not_focused ?? 0),
+      total: Number(row?.total ?? 0),
+      first_seen: String(row?.firstSeen ?? row?.first_seen ?? ''),
+      last_seen: String(row?.lastSeen ?? row?.last_seen ?? ''),
+    };
+  });
+}
+
+function normalizeEventRows(eventRows = []) {
+  if (!Array.isArray(eventRows)) return [];
+  return eventRows.map((row, index) => {
+    if (Array.isArray(row)) {
+      return {
+        timestamp: String(row?.[0] ?? ''),
+        id: String(row?.[1] ?? `person-${index + 1}`),
+        label: String(row?.[2] ?? `Person ${index + 1}`),
+        status: String(row?.[3] ?? ''),
+        confidence: Number(row?.[4] ?? 0),
+      };
+    }
+    return {
+      timestamp: String(row?.timestamp ?? ''),
+      id: String(row?.id ?? `person-${index + 1}`),
+      label: String(row?.label ?? `Person ${index + 1}`),
+      status: String(row?.status ?? ''),
+      confidence: Number(row?.confidence ?? 0),
+    };
+  });
+}
+
+function buildPertemuanMetrics(summaryRows = [], eventRows = []) {
+  const totalFocused = summaryRows.reduce((sum, row) => sum + Number(row.focused || 0), 0);
+  const totalNotFocused = summaryRows.reduce((sum, row) => sum + Number(row.not_focused || 0), 0);
+  const totalMoments = totalFocused + totalNotFocused;
+  const focusPct = totalMoments > 0 ? Number(((totalFocused / totalMoments) * 100).toFixed(2)) : 0;
+  const notFocusPct = totalMoments > 0 ? Number(((totalNotFocused / totalMoments) * 100).toFixed(2)) : 0;
+
+  const dataFokus = summaryRows.map((row) => {
+    const rowTotal = Number(row.total || (row.focused || 0) + (row.not_focused || 0));
+    const persenFokus = rowTotal > 0 ? Number(((Number(row.focused || 0) / rowTotal) * 100).toFixed(2)) : 0;
+    const persenTidakFokus = rowTotal > 0 ? Number(((Number(row.not_focused || 0) / rowTotal) * 100).toFixed(2)) : 0;
+    let status = 'Kurang';
+    if (persenFokus >= 80) status = 'Baik';
+    else if (persenFokus >= 60) status = 'Cukup';
+
+    return {
+      id_siswa: row.label || row.id,
+      fokus: eventRows
+        .filter((event) => String(event.id) === String(row.id))
+        .map((event) => Number(event.confidence || 0)),
+      jumlah_sesi_fokus: Number(row.focused || 0),
+      durasi_fokus: Number(row.focused || 0),
+      waktu_hadir: rowTotal,
+      persen_fokus: persenFokus,
+      persen_tidak_fokus: persenTidakFokus,
+      status,
+    };
+  });
+
+  return {
+    dataFokus,
+    hasilAkhirKelas: {
+      fokus: focusPct,
+      tidak_fokus: notFocusPct,
+      jumlah_hadir: summaryRows.length,
+      fokus_count: totalFocused,
+      tidak_fokus_count: totalNotFocused,
+    },
+  };
 }
 
 router.post('/frame', (req, res) => {
@@ -195,6 +290,7 @@ router.post('/start', auth, async (req, res) => {
 router.post('/stop/:sessionId', auth, async (req, res) => {
   try {
     const { sessionId } = req.params;
+    const { record_summary, record_events, record_status } = req.body || {};
     
     const liveSession = await LiveSession.findOne({ sessionId });
     if (!liveSession) {
@@ -206,7 +302,41 @@ router.post('/stop/:sessionId', auth, async (req, res) => {
     liveSession.summary.totalDuration = Math.floor((liveSession.endTime - liveSession.startTime) / 1000 / 60); // in minutes
 
     await liveSession.save();
-    res.json(liveSession);
+
+    const scheduleDoc = liveSession.jadwal_id ? await Schedule.findById(liveSession.jadwal_id) : null;
+    const summaryRows = normalizeSummaryRows(record_summary);
+    const eventRows = normalizeEventRows(record_events);
+    const { dataFokus, hasilAkhirKelas } = buildPertemuanMetrics(summaryRows, eventRows);
+    const pertemuanPayload = {
+      sessionId: liveSession.sessionId,
+      jadwal_id: liveSession.jadwal_id || scheduleDoc?._id || null,
+      live_session_id: liveSession._id,
+      kelas_id: liveSession.kelas_id || scheduleDoc?.kelas_id || null,
+      tanggal: scheduleDoc?.tanggal || liveSession.startTime || new Date(),
+      pertemuan_ke: scheduleDoc?.pertemuan_ke || 1,
+      kelas: liveSession.kelas,
+      mata_kuliah: liveSession.mata_kuliah,
+      mata_kuliah_id: liveSession.mata_kuliah_id,
+      dosen_id: liveSession.dosen_id,
+      durasi_pertemuan: Math.max(1, Number(liveSession.summary.totalDuration || 0)),
+      topik: scheduleDoc?.topik || 'Live Monitoring Session',
+      catatan: String(record_status || '').trim(),
+      data_fokus: dataFokus,
+      hasil_akhir_kelas: hasilAkhirKelas,
+      record_events: eventRows,
+    };
+
+    const pertemuan = await Pertemuan.findOneAndUpdate(
+      { sessionId: liveSession.sessionId },
+      pertemuanPayload,
+      { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true }
+    );
+
+    if (liveSession.jadwal_id) {
+      await Schedule.findByIdAndUpdate(liveSession.jadwal_id, { status: 'completed' });
+    }
+
+    res.json({ liveSession, pertemuan });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

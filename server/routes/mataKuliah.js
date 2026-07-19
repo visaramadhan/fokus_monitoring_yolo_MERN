@@ -5,10 +5,21 @@ import mongoose from 'mongoose';
 
 const router = express.Router();
 
+function buildYearRange(year) {
+  const rawYear = String(year || '').trim();
+  if (!/^\d{4}$/.test(rawYear)) {
+    return { error: 'Invalid year. Use YYYY format.' };
+  }
+
+  const start = new Date(`${rawYear}-01-01T00:00:00.000Z`);
+  const end = new Date(`${Number(rawYear) + 1}-01-01T00:00:00.000Z`);
+  return { start, end };
+}
+
 // Get all subjects
 router.get('/', auth, async (req, res) => {
   try {
-    const { dosen_id } = req.query;
+    const { dosen_id, year } = req.query;
     const query = {};
 
     if (req.user.role === 'dosen') {
@@ -19,6 +30,14 @@ router.get('/', auth, async (req, res) => {
         return res.status(400).json({ message: 'Invalid dosen_id' });
       }
       query.dosen_id = new mongoose.Types.ObjectId(raw);
+    }
+
+    if (year) {
+      const yearRange = buildYearRange(year);
+      if (yearRange.error) {
+        return res.status(400).json({ message: yearRange.error });
+      }
+      query.createdAt = { $gte: yearRange.start, $lt: yearRange.end };
     }
 
     const mataKuliah = await MataKuliah.find(query)
