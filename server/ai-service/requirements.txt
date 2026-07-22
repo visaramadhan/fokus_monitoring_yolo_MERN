@@ -1,0 +1,7 @@
+gradio>=3.39.0
+mediapipe>=0.10.9
+opencv-python
+numpy
+scikit-learn
+joblib
+openpyxl

@@ -26,3 +26,16 @@ dist-ssr
 # Python cache
 __pycache__/
 *.pyc
+
+# Python virtualenv
+.venv/
+venv/
+env/
+ENV/
+pyvenv.cfg
+
+# Python build / package
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
