@@ -76,7 +76,7 @@ app.use((req, res, next) => {
     reqPath === '/health' ||
     reqPath === '/db/status' ||
     reqPath === '/ai-service/health' ||
-    reqPath.startsWith('/ai-service/gradio')
+    reqPath.startsWith('/ai-service')
   ) return next();
   if (mongoose.connection.readyState !== 1) {
     // #region debug-point A:db-guard-block

@@ -2,6 +2,21 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 import axios from 'axios';
 import { jwtDecode } from 'jwt-decode';
 
+function reportDebugEvent(payload: Record<string, unknown>) {
+  // #region debug-point A:frontend-report
+  fetch('http://127.0.0.1:7777/event', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionId: 'data-fetch-failed',
+      runId: 'pre-fix',
+      ts: Date.now(),
+      ...payload,
+    }),
+  }).catch(() => {});
+  // #endregion
+}
+
 interface User {
   id: string;
   username: string;
@@ -37,6 +52,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const interceptor = axios.interceptors.response.use(
       (response) => response,
       (error) => {
+        // #region debug-point A:axios-response-error
+        reportDebugEvent({
+          hypothesisId: 'A',
+          location: 'src/contexts/AuthContext.tsx:axios-interceptor',
+          msg: '[DEBUG] axios response error',
+          data: {
+            url: error.config?.url || null,
+            method: error.config?.method || null,
+            status: error.response?.status || null,
+            responseMessage: error.response?.data?.message || null,
+            hasToken: Boolean(localStorage.getItem('token')),
+          },
+        });
+        // #endregion
         if (error.response?.status === 401) {
           logout();
         }
@@ -73,6 +102,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const response = await axios.get('/api/auth/me');
       setUser(response.data.user);
     } catch (error) {
+      // #region debug-point B:get-current-user-failure
+      reportDebugEvent({
+        hypothesisId: 'B',
+        location: 'src/contexts/AuthContext.tsx:getCurrentUser',
+        msg: '[DEBUG] getCurrentUser failed',
+        data: {
+          hasToken: Boolean(localStorage.getItem('token')),
+          errorName: error instanceof Error ? error.name : typeof error,
+        },
+      });
+      // #endregion
       console.error('Error getting current user:', error);
       logout();
     } finally {

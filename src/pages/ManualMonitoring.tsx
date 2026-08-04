@@ -48,6 +48,21 @@ interface UserOption {
   username?: string;
 }
 
+interface Schedule {
+  _id: string;
+  kelas: string;
+  mata_kuliah: string;
+  dosen_name?: string;
+  tanggal: string;
+  jam_mulai: string;
+  jam_selesai: string;
+  pertemuan_ke: number;
+  topik?: string;
+  status: 'scheduled' | 'ongoing' | 'completed' | 'cancelled';
+  mata_kuliah_id?: string | { _id?: string };
+  kelas_id?: string | { _id?: string };
+}
+
 export default function ManualMonitoring() {
   const { user } = useAuth();
   const { showSuccess, showError } = useStatusModal();
@@ -59,7 +74,7 @@ export default function ManualMonitoring() {
   const [loadingSubjects, setLoadingSubjects] = useState(true);
   const [selectedSubject, setSelectedSubject] = useState<MataKuliah | null>(null);
   const [sessionNumber, setSessionNumber] = useState(1);
-  const [schedules, setSchedules] = useState<any[]>([]);
+  const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [loadingSchedules, setLoadingSchedules] = useState(true);
   const [selectedScheduleId, setSelectedScheduleId] = useState<string>('');
   const [dosenOptions, setDosenOptions] = useState<UserOption[]>([]);
@@ -103,6 +118,110 @@ export default function ManualMonitoring() {
       d.getDate() === now.getDate()
     );
   };
+
+  const toDateOnly = (value: string | Date) => {
+    const date = new Date(value);
+    date.setHours(0, 0, 0, 0);
+    return date;
+  };
+
+  const formatScheduleDate = (value: string) =>
+    new Date(value).toLocaleDateString('id-ID', {
+      weekday: 'long',
+      day: '2-digit',
+      month: 'long',
+      year: 'numeric',
+    });
+
+  const toMinutes = (time: string) => {
+    const [hours = '0', minutes = '0'] = String(time || '').split(':');
+    return Number(hours) * 60 + Number(minutes);
+  };
+
+  const getSchedulePresentation = (schedule: Schedule) => {
+    const today = toDateOnly(new Date());
+    const scheduleDate = toDateOnly(schedule.tanggal);
+    const isPast = scheduleDate.getTime() < today.getTime();
+    const isFuture = scheduleDate.getTime() > today.getTime();
+
+    if (schedule.status === 'cancelled') {
+      return {
+        label: 'Cancelled',
+        canSelect: false,
+        badgeClass: 'bg-red-100 text-red-700',
+        cardClass: 'border-red-100 bg-red-50 opacity-75 cursor-not-allowed',
+      };
+    }
+
+    if (schedule.status === 'completed' || isPast) {
+      return {
+        label: 'Done',
+        canSelect: false,
+        badgeClass: 'bg-emerald-100 text-emerald-700',
+        cardClass: 'border-emerald-100 bg-emerald-50 opacity-80 cursor-not-allowed',
+      };
+    }
+
+    if (isFuture) {
+      return {
+        label: 'Upcoming',
+        canSelect: false,
+        badgeClass: 'bg-slate-100 text-slate-600',
+        cardClass: 'border-slate-200 bg-slate-50 opacity-50 cursor-not-allowed',
+      };
+    }
+
+    if (schedule.status === 'ongoing') {
+      return {
+        label: 'Ongoing',
+        canSelect: true,
+        badgeClass: 'bg-amber-100 text-amber-700',
+        cardClass: 'border-amber-200 bg-amber-50',
+      };
+    }
+
+    return {
+      label: 'Scheduled',
+      canSelect: true,
+      badgeClass: 'bg-blue-100 text-blue-700',
+      cardClass: 'border-blue-200 bg-blue-50',
+    };
+  };
+
+  const totalStudents = seats.length;
+  const focusedStudents = seats.filter((seat) => seat.distractions === 0).length;
+  const notFocusedStudents = totalStudents - focusedStudents;
+  const focusRate = totalStudents > 0 ? (focusedStudents / totalStudents) * 100 : 0;
+  const realtimeSummaryCards = [
+    {
+      label: 'Total Student',
+      value: totalStudents,
+      valueClass: 'text-slate-900',
+      cardClass: 'border-slate-200 bg-slate-50',
+      accentClass: 'bg-slate-700',
+    },
+    {
+      label: 'Focused',
+      value: focusedStudents,
+      valueClass: 'text-emerald-700',
+      cardClass: 'border-emerald-100 bg-emerald-50',
+      accentClass: 'bg-emerald-500',
+    },
+    {
+      label: 'Not Focused',
+      value: notFocusedStudents,
+      valueClass: 'text-rose-700',
+      cardClass: 'border-rose-100 bg-rose-50',
+      accentClass: 'bg-rose-500',
+    },
+    {
+      label: 'Focus Rate',
+      value: `${focusRate.toFixed(1)}%`,
+      valueClass: 'text-blue-700',
+      cardClass: 'border-blue-100 bg-blue-50',
+      accentClass: 'bg-blue-500',
+    },
+  ];
 
   useEffect(() => {
     const fetchDosen = async () => {
@@ -156,8 +275,6 @@ export default function ManualMonitoring() {
           return;
         }
         const params: any = {
-          status: 'available',
-          date: todayStr(),
           mata_kuliah_id: selectedSubject._id,
           kelas: config.className
         };
@@ -165,7 +282,13 @@ export default function ManualMonitoring() {
           params.dosen_id = selectedDosenId;
         }
         const res = await axios.get('/api/jadwal', { params });
-        setSchedules(res.data || []);
+        const nextSchedules = Array.isArray(res.data) ? res.data : [];
+        nextSchedules.sort((a: Schedule, b: Schedule) => {
+          const dateDiff = toDateOnly(a.tanggal).getTime() - toDateOnly(b.tanggal).getTime();
+          if (dateDiff !== 0) return dateDiff;
+          return toMinutes(a.jam_mulai) - toMinutes(b.jam_mulai);
+        });
+        setSchedules(nextSchedules);
       } catch (error) {
         showError('Gagal', 'Gagal memuat data schedule.');
       } finally {
@@ -173,7 +296,7 @@ export default function ManualMonitoring() {
       }
     };
     fetchSchedules();
-  }, [user?.role, selectedDosenId, selectedSubject?._id, config.className, selectedScheduleId]);
+  }, [user?.role, selectedDosenId, selectedSubject?._id, config.className]);
 
   // Setup Functions
   const generateGrid = () => {
@@ -287,20 +410,20 @@ export default function ManualMonitoring() {
       const totalEvents = distractionLog.length;
       const cleanSeats = seats.filter(s => s.distractions === 0).length;
       const focusPercentage = Math.round((cleanSeats / seats.length) * 100);
-      const selectedSchedule = schedules.find((s: any) => s._id === selectedScheduleId);
+      const selectedSchedule = schedules.find((s) => s._id === selectedScheduleId);
       const scheduleSubjectId =
         selectedSchedule
-          ? (typeof (selectedSchedule as any).mata_kuliah_id === 'string'
-              ? ((selectedSchedule as any).mata_kuliah_id as string)
-              : ((selectedSchedule as any).mata_kuliah_id?._id as string | undefined))
+          ? (typeof selectedSchedule.mata_kuliah_id === 'string'
+              ? selectedSchedule.mata_kuliah_id
+              : (selectedSchedule.mata_kuliah_id?._id as string | undefined))
           : undefined;
 
       const mataKuliahId = scheduleSubjectId || selectedSubject?._id;
       const scheduleKelasId =
         selectedSchedule
-          ? (typeof (selectedSchedule as any).kelas_id === 'string'
-              ? ((selectedSchedule as any).kelas_id as string)
-              : ((selectedSchedule as any).kelas_id?._id as string | undefined))
+          ? (typeof selectedSchedule.kelas_id === 'string'
+              ? selectedSchedule.kelas_id
+              : (selectedSchedule.kelas_id?._id as string | undefined))
           : undefined;
       const mataKuliahName = selectedSchedule?.mata_kuliah || selectedSubject?.nama || config.subject;
       const kelasName = selectedSchedule?.kelas || config.className;
@@ -472,41 +595,78 @@ export default function ManualMonitoring() {
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">Schedule (Hari Ini)</label>
-          <div className="relative">
-            <Calendar className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-5 w-5" />
+          <div className="mb-3 flex items-center justify-between gap-4">
+            <label className="block text-sm font-medium text-gray-700">Pilih Schedule</label>
+            <span className="text-xs text-gray-500">
+              Jadwal lama tampil sebagai `Done`, jadwal mendatang tampil pudar dan tidak bisa dipilih.
+            </span>
+          </div>
+          <div className="space-y-3 max-h-[320px] overflow-auto pr-1">
             {loadingSchedules ? (
-              <div className="pl-10 py-2.5 text-gray-500">Loading schedules...</div>
+              <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 px-4 py-6 text-sm text-gray-500 text-center">
+                Loading schedules...
+              </div>
+            ) : !selectedSubject?._id || !config.className || (user?.role === 'admin' ? !selectedDosenId : false) ? (
+              <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 px-4 py-6 text-sm text-gray-500 text-center">
+                Pilih dosen, mata kuliah, dan kelas terlebih dahulu untuk melihat daftar schedule.
+              </div>
+            ) : schedules.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 px-4 py-6 text-sm text-gray-500 text-center">
+                Belum ada schedule untuk kombinasi mata kuliah dan kelas ini.
+              </div>
             ) : (
-              <select
-                value={selectedScheduleId}
-                onChange={(e) => {
-                  const id = e.target.value;
-                  setSelectedScheduleId(id);
-                  const sched = schedules.find((s) => s._id === id);
-                  if (sched) {
-                    setSessionNumber(sched.pertemuan_ke || 1);
-                    setConfig((prev) => ({
-                      ...prev,
-                      subject: sched.mata_kuliah || prev.subject,
-                      className: sched.kelas || prev.className
-                    }));
-                  }
-                }}
-                disabled={
-                  !selectedSubject?._id ||
-                  !config.className ||
-                  (user?.role === 'admin' ? !selectedDosenId : false)
-                }
-                className="pl-10 w-full border border-gray-300 rounded-lg p-2.5 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white disabled:opacity-60 disabled:cursor-not-allowed"
-              >
-                <option value="">Select Schedule</option>
-                {schedules.map((s: any) => (
-                  <option key={s._id} value={s._id}>
-                    {s.mata_kuliah} - {s.kelas} - {new Date(s.tanggal).toLocaleDateString()} {s.jam_mulai}-{s.jam_selesai} (#{s.pertemuan_ke})
-                  </option>
-                ))}
-              </select>
+              schedules.map((schedule) => {
+                const presentation = getSchedulePresentation(schedule);
+                const isSelected = selectedScheduleId === schedule._id;
+                return (
+                  <button
+                    key={schedule._id}
+                    type="button"
+                    onClick={() => {
+                      if (!presentation.canSelect) return;
+                      setSelectedScheduleId(schedule._id);
+                      setSessionNumber(schedule.pertemuan_ke || 1);
+                      setConfig((prev) => ({
+                        ...prev,
+                        subject: schedule.mata_kuliah || prev.subject,
+                        className: schedule.kelas || prev.className,
+                      }));
+                    }}
+                    disabled={!presentation.canSelect}
+                    className={`w-full rounded-2xl border px-4 py-4 text-left transition-all ${presentation.cardClass} ${isSelected ? 'ring-2 ring-blue-500 border-blue-400 shadow-md' : 'hover:shadow-sm'}`}
+                  >
+                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                      <div>
+                        <div className="text-base font-semibold text-gray-900">
+                          {schedule.mata_kuliah} - {schedule.kelas}
+                        </div>
+                        <div className="mt-1 text-sm text-gray-600">
+                          {formatScheduleDate(schedule.tanggal)}
+                        </div>
+                        <div className="mt-1 text-sm text-gray-600">
+                          {schedule.jam_mulai} - {schedule.jam_selesai} | Pertemuan {schedule.pertemuan_ke}
+                        </div>
+                        {schedule.topik && (
+                          <div className="mt-1 text-sm text-gray-500">
+                            Topik: {schedule.topik}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex flex-col items-start md:items-end gap-2">
+                        <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${presentation.badgeClass}`}>
+                          {presentation.label}
+                        </span>
+                        {presentation.canSelect ? (
+                          <span className="text-xs text-blue-700">Bisa dipilih untuk manual monitoring</span>
+                        ) : (
+                          <span className="text-xs text-gray-500">Tidak bisa dipilih</span>
+                        )}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })
             )}
           </div>
         </div>
@@ -594,6 +754,33 @@ export default function ManualMonitoring() {
                 <Square className="h-4 w-4 mr-2" /> Stop
               </button>
             )}
+          </div>
+        </div>
+
+        <div className="border-b border-gray-100 px-6 py-5">
+          <div className="mb-4 flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
+            <div>
+              <h3 className="text-lg font-semibold text-gray-800">Realtime Monitoring Summary</h3>
+              <p className="text-sm text-gray-500">Ringkasan di bawah ini berubah mengikuti catatan manual selama sesi berjalan.</p>
+            </div>
+            <span className={`inline-flex w-fit rounded-full px-3 py-1 text-sm font-medium ${isSessionActive ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-700'}`}>
+              Status Session: {isSessionActive ? 'Active' : 'Paused'}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+            {realtimeSummaryCards.map((card) => (
+              <div
+                key={card.label}
+                className={`rounded-xl border px-4 py-4 shadow-sm ${card.cardClass}`}
+              >
+                <div className="mb-3 flex items-center gap-2">
+                  <span className={`h-2.5 w-2.5 rounded-full ${card.accentClass} ${isSessionActive ? 'animate-pulse' : ''}`}></span>
+                  <div className="text-sm font-medium text-gray-500">{card.label}</div>
+                </div>
+                <div className={`mt-2 text-3xl font-bold ${card.valueClass}`}>{card.value}</div>
+              </div>
+            ))}
           </div>
         </div>
 
@@ -742,6 +929,21 @@ export default function ManualMonitoring() {
           </div>
           
           <div className="p-8">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4 mb-8">
+              {realtimeSummaryCards.map((card) => (
+                <div
+                  key={card.label}
+                  className={`rounded-xl border px-4 py-4 shadow-sm ${card.cardClass}`}
+                >
+                  <div className="mb-3 flex items-center gap-2">
+                    <span className={`h-2.5 w-2.5 rounded-full ${card.accentClass}`}></span>
+                    <div className="text-sm font-medium text-gray-500">{card.label}</div>
+                  </div>
+                  <div className={`mt-2 text-3xl font-bold ${card.valueClass}`}>{card.value}</div>
+                </div>
+              ))}
+            </div>
+
             <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-8">
               <div className="text-center p-6 bg-gray-50 rounded-xl">
                 <p className="text-gray-500 font-medium uppercase tracking-wide text-xs">Duration</p>
@@ -819,10 +1021,33 @@ export default function ManualMonitoring() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50/50 p-6">
-      {step === 'setup' && renderSetup()}
-      {step === 'monitoring' && renderMonitoring()}
-      {step === 'summary' && renderSummary()}
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-6">
+      <div className="max-w-7xl mx-auto space-y-6">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <h1 className="text-3xl font-bold text-gray-800 flex items-center gap-3">
+              <Grid3X3 className="w-8 h-8 text-pink-600" />
+              Manual Monitoring Fokus Siswa
+            </h1>
+            <p className="mt-1 text-sm text-gray-500">
+              Pencatatan fokus siswa secara manual berbasis layout kursi dan schedule.
+            </p>
+          </div>
+          {selectedScheduleId ? (
+            <span className="inline-flex w-fit rounded-full bg-blue-50 px-3 py-1 text-sm font-medium text-blue-700 border border-blue-100">
+              Schedule dipilih
+            </span>
+          ) : (
+            <span className="inline-flex w-fit rounded-full bg-slate-100 px-3 py-1 text-sm font-medium text-slate-700 border border-slate-200">
+              Pilih schedule dulu
+            </span>
+          )}
+        </div>
+
+        {step === 'setup' && renderSetup()}
+        {step === 'monitoring' && renderMonitoring()}
+        {step === 'summary' && renderSummary()}
+      </div>
     </div>
   );
 }

@@ -3,7 +3,9 @@ import json
 import os
 import time
 import base64
+import urllib.request
 from collections import deque
+from types import SimpleNamespace
 import cv2
 import gradio as gr
 import joblib
@@ -21,6 +23,44 @@ except Exception:
 # Initialize FastAPI app
 app = FastAPI(title="Focus Detection API")
 
+DEBUG_ENV_PATH = r"c:\Users\LENOVO\Documents\fokus_monitoring_yolo_MERN\.dbg\face-distance-detection.env"
+
+
+def report_debug_event(hypothesis_id, location, msg, data=None, run_id="pre-fix"):
+    # #region debug-point A:report-debug-event
+    _u, _s = "http://127.0.0.1:7777/event", "face-distance-detection"
+    try:
+        with open(DEBUG_ENV_PATH, "r", encoding="utf-8") as _f:
+            for _line in _f:
+                if _line.startswith("DEBUG_SERVER_URL="):
+                    _u = _line.split("=", 1)[1].strip()
+                elif _line.startswith("DEBUG_SESSION_ID="):
+                    _s = _line.split("=", 1)[1].strip()
+    except Exception:
+        pass
+    try:
+        urllib.request.urlopen(
+            urllib.request.Request(
+                _u,
+                data=json.dumps(
+                    {
+                        "sessionId": _s,
+                        "runId": run_id,
+                        "hypothesisId": hypothesis_id,
+                        "location": location,
+                        "msg": msg,
+                        "data": data or {},
+                        "ts": int(time.time() * 1000),
+                    }
+                ).encode(),
+                headers={"Content-Type": "application/json"},
+            ),
+            timeout=0.6,
+        ).read()
+    except Exception:
+        pass
+    # #endregion
+
 # Pydantic models for API requests
 class FrameRequest(BaseModel):
     image_base64: str
@@ -36,6 +76,7 @@ _BaseOptions = None
 Image = None
 ImageFormat = None
 face_detector = None
+mp_face_detection = None
 
 try:
     from mediapipe.tasks.python.vision import FaceLandmarker, FaceLandmarkerOptions
@@ -44,6 +85,8 @@ try:
         from mediapipe.tasks.python.vision.core.image import Image, ImageFormat
     except Exception:
         from mediapipe.tasks.python.vision import Image, ImageFormat
+    from mediapipe import solutions as mps
+    mp_face_detection = mps.face_detection
     USE_TASKS = True
 except Exception:
     # fallback to solutions FaceMesh
@@ -51,6 +94,7 @@ except Exception:
         from mediapipe import solutions as mps
         USE_TASKS = False
         mps_face_mesh = mps.face_mesh
+        mp_face_detection = mps.face_detection
     except Exception:
         raise ImportError("Neither MediaPipe Tasks nor Solutions FaceMesh could be imported. Please install mediapipe.")
 
@@ -76,6 +120,8 @@ def download_model():
 if USE_TASKS:
     download_model()
 
+FACE_DETECTION_MIN_CONFIDENCE = 0.35
+
 # Initialize detector depending on available API
 if USE_TASKS:
     options_init = FaceLandmarkerOptions(
@@ -88,6 +134,12 @@ if USE_TASKS:
 else:
     # use Solutions FaceMesh as fallback
     face_mesh = mps_face_mesh.FaceMesh(static_image_mode=False, refine_landmarks=True, max_num_faces=5)
+
+if mp_face_detection is not None:
+    face_detector = mp_face_detection.FaceDetection(
+        model_selection=1,
+        min_detection_confidence=FACE_DETECTION_MIN_CONFIDENCE,
+    )
 
 LEFT_EYE = [33, 160, 158, 133, 153, 144]
 RIGHT_EYE = [362, 385, 387, 263, 373, 380]
@@ -103,13 +155,16 @@ STATIC_IRIS_SLEEPY = 0.22
 CONSEC_FRAMES_REQUIRED = 5
 
 LOG_FILE = "focus_log.csv"
-WEBCAM_MAX_DIM = 640
+WEBCAM_MAX_DIM = 1280
 WEBCAM_STREAM_EVERY = 0.1
 MAX_TRACKED_FACES = 5
 TRACKS = {}
 NEXT_TRACK_ID = 1
-TRACK_MAX_MISSES = 8
-TRACK_MATCH_DISTANCE_RATIO = 0.18
+TRACK_MAX_MISSES = 18
+TRACK_MATCH_DISTANCE_RATIO = 0.28
+TRACK_MIN_IOU = 0.08
+DETECTION_RETRY_MAX_DIM = 1280
+FACE_DETECTION_PADDING_RATIO = 0.22
 RECORDING_ACTIVE = False
 RECORD_EVENTS = []
 RECORD_EVENT_LIMIT = 5000
@@ -235,6 +290,7 @@ def append_record_events(metrics):
 def start_recording():
     global RECORDING_ACTIVE, RECORD_SESSION_STARTED_AT, RECORD_SESSION_STOPPED_AT
 
+    reset_tracking_state()
     RECORDING_ACTIVE = True
     RECORD_EVENTS.clear()
     RECORD_SESSION_STARTED_AT = time.time()
@@ -424,6 +480,7 @@ def create_track_state():
         "closed_count": 0,
         "open_count": 0,
         "centroid": None,
+        "bbox": None,
         "misses": 0,
         "last_seen": 0.0,
     }
@@ -453,12 +510,219 @@ def get_face_landmarks_list(rgb_frame):
     return []
 
 
-def assign_track_id(centroid, frame_shape, used_track_ids):
+def detect_face_regions(rgb_frame):
+    if face_detector is None:
+        return []
+
+    results = face_detector.process(rgb_frame)
+    detections = getattr(results, "detections", None) or []
+    frame_height, frame_width = rgb_frame.shape[:2]
+    face_regions = []
+
+    for detection in detections:
+        relative_bbox = detection.location_data.relative_bounding_box
+        x1 = max(0, int(relative_bbox.xmin * frame_width))
+        y1 = max(0, int(relative_bbox.ymin * frame_height))
+        bbox_w = max(1, int(relative_bbox.width * frame_width))
+        bbox_h = max(1, int(relative_bbox.height * frame_height))
+        x2 = min(frame_width - 1, x1 + bbox_w)
+        y2 = min(frame_height - 1, y1 + bbox_h)
+        score = float(detection.score[0]) if getattr(detection, "score", None) else 0.0
+        face_regions.append(
+            {
+                "bbox": (x1, y1, x2, y2),
+                "score": score,
+            }
+        )
+
+    return sorted(face_regions, key=lambda region: region["bbox"][0])
+
+
+def upscale_frame_for_detection(rgb_frame, target_max_dim=DETECTION_RETRY_MAX_DIM):
+    frame_height, frame_width = rgb_frame.shape[:2]
+    largest_dim = max(frame_width, frame_height)
+    if largest_dim >= target_max_dim:
+        return rgb_frame, 1.0
+
+    scale = target_max_dim / float(largest_dim)
+    resized = cv2.resize(
+        rgb_frame,
+        (max(1, int(frame_width * scale)), max(1, int(frame_height * scale))),
+        interpolation=cv2.INTER_CUBIC,
+    )
+    return resized, scale
+
+
+def detect_landmarks_direct_with_retry(rgb_frame):
+    landmarks_list = get_face_landmarks_list(rgb_frame)
+    if landmarks_list:
+        return landmarks_list, rgb_frame, 1.0
+
+    retry_frame, retry_scale = upscale_frame_for_detection(rgb_frame)
+    if retry_scale <= 1.01:
+        return [], rgb_frame, 1.0
+
+    retry_landmarks_list = get_face_landmarks_list(retry_frame)
+    if retry_landmarks_list:
+        return retry_landmarks_list, retry_frame, retry_scale
+
+    return [], rgb_frame, 1.0
+
+
+def expand_bbox(bbox, frame_shape, padding_ratio=FACE_DETECTION_PADDING_RATIO):
+    frame_height, frame_width = frame_shape[:2]
+    x1, y1, x2, y2 = bbox
+    bbox_w = max(1, x2 - x1)
+    bbox_h = max(1, y2 - y1)
+    pad_x = int(bbox_w * padding_ratio)
+    pad_y = int(bbox_h * padding_ratio)
+
+    return (
+        max(0, x1 - pad_x),
+        max(0, y1 - pad_y),
+        min(frame_width - 1, x2 + pad_x),
+        min(frame_height - 1, y2 + pad_y),
+    )
+
+
+def remap_landmarks_to_frame(landmarks, crop_bbox, frame_shape):
+    crop_x1, crop_y1, crop_x2, crop_y2 = crop_bbox
+    crop_width = max(crop_x2 - crop_x1, 1)
+    crop_height = max(crop_y2 - crop_y1, 1)
+    frame_height, frame_width = frame_shape[:2]
+    mapped = []
+    frame_width = max(frame_width, 1)
+    frame_height = max(frame_height, 1)
+
+    for landmark in landmarks:
+        mapped_x = (crop_x1 + landmark.x * crop_width) / frame_width
+        mapped_y = (crop_y1 + landmark.y * crop_height) / frame_height
+        mapped.append(
+            SimpleNamespace(
+                x=min(max(mapped_x, 0.0), 1.0),
+                y=min(max(mapped_y, 0.0), 1.0),
+                z=getattr(landmark, "z", 0.0),
+            )
+        )
+
+    return mapped
+
+
+def extract_face_landmarks_from_regions(rgb_frame, face_regions):
+    frame_height, frame_width = rgb_frame.shape[:2]
+    people_landmarks = []
+
+    for face_region in face_regions:
+        expanded_bbox = expand_bbox(face_region["bbox"], rgb_frame.shape)
+        x1, y1, x2, y2 = expanded_bbox
+        face_crop = rgb_frame[y1:y2, x1:x2]
+        if face_crop.size == 0:
+            continue
+
+        crop_landmarks, processed_crop, crop_scale = detect_landmarks_direct_with_retry(face_crop)
+        if not crop_landmarks:
+            continue
+
+        def landmark_area(landmarks):
+            bbox = get_face_bbox(landmarks, processed_crop.shape[1], processed_crop.shape[0])
+            return max(0, bbox[2] - bbox[0]) * max(0, bbox[3] - bbox[1])
+
+        primary_landmarks = max(
+            crop_landmarks,
+            key=landmark_area,
+        )
+        mapped_landmarks = remap_landmarks_to_frame(
+            primary_landmarks,
+            expanded_bbox,
+            rgb_frame.shape,
+        )
+        people_landmarks.append(
+            {
+                "landmarks": mapped_landmarks,
+                "bbox": get_face_bbox(mapped_landmarks, frame_width, frame_height),
+                "score": face_region.get("score", 0.0),
+                "crop_scale": crop_scale,
+            }
+        )
+
+    return people_landmarks
+
+
+def get_face_landmarks_with_retry(rgb_frame):
+    direct_regions = detect_face_regions(rgb_frame)
+    if direct_regions:
+        people_landmarks = extract_face_landmarks_from_regions(rgb_frame, direct_regions)
+        if people_landmarks:
+            return people_landmarks, rgb_frame, 1.0, len(direct_regions)
+
+    retry_frame, retry_scale = upscale_frame_for_detection(rgb_frame)
+    if retry_scale > 1.01:
+        retry_regions = detect_face_regions(retry_frame)
+        if retry_regions:
+            people_landmarks = extract_face_landmarks_from_regions(retry_frame, retry_regions)
+            if people_landmarks:
+                # #region debug-point A:retry-upscale-hit
+                report_debug_event(
+                    "A",
+                    "app.py:get_face_landmarks_with_retry:retry-upscale-hit",
+                    "[DEBUG] face-first detection recovered after upscale retry",
+                    {
+                        "original_width": int(rgb_frame.shape[1]),
+                        "original_height": int(rgb_frame.shape[0]),
+                        "retry_width": int(retry_frame.shape[1]),
+                        "retry_height": int(retry_frame.shape[0]),
+                        "retry_scale": round(retry_scale, 3),
+                        "detected_faces": len(retry_regions),
+                        "landmark_faces": len(people_landmarks),
+                    },
+                )
+                # #endregion
+                return people_landmarks, retry_frame, retry_scale, len(retry_regions)
+
+    fallback_landmarks, _, _ = detect_landmarks_direct_with_retry(rgb_frame)
+    if fallback_landmarks:
+        people_landmarks = [
+            {
+                "landmarks": landmarks,
+                "bbox": get_face_bbox(landmarks, rgb_frame.shape[1], rgb_frame.shape[0]),
+                "score": 0.0,
+                "crop_scale": 1.0,
+            }
+            for landmarks in fallback_landmarks
+        ]
+        return people_landmarks, rgb_frame, 1.0, len(people_landmarks)
+
+    return [], rgb_frame, 1.0, 0
+
+
+def bbox_iou(box_a, box_b):
+    if not box_a or not box_b:
+        return 0.0
+
+    ax1, ay1, ax2, ay2 = box_a
+    bx1, by1, bx2, by2 = box_b
+    inter_x1 = max(ax1, bx1)
+    inter_y1 = max(ay1, by1)
+    inter_x2 = min(ax2, bx2)
+    inter_y2 = min(ay2, by2)
+    inter_w = max(0, inter_x2 - inter_x1)
+    inter_h = max(0, inter_y2 - inter_y1)
+    inter_area = inter_w * inter_h
+    area_a = max(0, ax2 - ax1) * max(0, ay2 - ay1)
+    area_b = max(0, bx2 - bx1) * max(0, by2 - by1)
+    denom = area_a + area_b - inter_area
+    if denom <= 0:
+        return 0.0
+    return inter_area / denom
+
+
+def assign_track_id(centroid, bbox, frame_shape, used_track_ids):
     global NEXT_TRACK_ID
 
     frame_height, frame_width = frame_shape[:2]
     max_distance = max(frame_width, frame_height) * TRACK_MATCH_DISTANCE_RATIO
     best_track_id = None
+    best_iou = 0.0
     best_distance = max_distance
 
     for track_id, track_state in TRACKS.items():
@@ -470,7 +734,17 @@ def assign_track_id(centroid, frame_shape, used_track_ids):
             continue
 
         distance = np.linalg.norm(np.array(centroid) - np.array(previous_centroid))
-        if distance < best_distance:
+        iou = bbox_iou(bbox, track_state.get("bbox"))
+        if iou >= TRACK_MIN_IOU and (iou > best_iou or (abs(iou - best_iou) < 1e-6 and distance < best_distance)):
+            best_iou = iou
+            best_distance = distance
+            best_track_id = track_id
+            continue
+
+        if best_track_id is None and distance < best_distance:
+            best_distance = distance
+            best_track_id = track_id
+        elif best_iou < TRACK_MIN_IOU and distance < best_distance:
             best_distance = distance
             best_track_id = track_id
 
@@ -485,6 +759,7 @@ def assign_track_id(centroid, frame_shape, used_track_ids):
 
     track_state = TRACKS[best_track_id]
     track_state["centroid"] = centroid
+    track_state["bbox"] = bbox
     track_state["misses"] = 0
     track_state["last_seen"] = time.time()
     used_track_ids.add(best_track_id)
@@ -684,6 +959,16 @@ def detect_focus(frame, detailed=False, return_metrics=False, use_trained=True):
 
     rgb_frame = to_rgb(frame)
     if rgb_frame is None:
+        # #region debug-point A:invalid-frame
+        report_debug_event(
+            "A",
+            "app.py:detect_focus:invalid-frame",
+            "[DEBUG] detect_focus received invalid frame",
+            {
+                "frame_type": type(frame).__name__ if frame is not None else "NoneType",
+            },
+        )
+        # #endregion
         # return a small blank image with an error message
         blank = np.zeros((240, 320, 3), dtype=np.uint8)
         cv2.putText(blank, "No frame", (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 2)
@@ -691,12 +976,57 @@ def detect_focus(frame, detailed=False, return_metrics=False, use_trained=True):
     for track_state in TRACKS.values():
         track_state["misses"] += 1
 
-    landmarks_list = get_face_landmarks_list(rgb_frame)
-    bgr = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
+    detected_faces, processed_rgb_frame, detection_scale, detector_face_count = get_face_landmarks_with_retry(rgb_frame)
+    bgr = cv2.cvtColor(processed_rgb_frame, cv2.COLOR_RGB2BGR)
     frame_height, frame_width = bgr.shape[:2]
 
-    if not landmarks_list:
+    # #region debug-point A:landmark-summary
+    _face_scales = []
+    for _entry in detected_faces[:5]:
+        _bbox = _entry["bbox"]
+        _bbox_w = max(0, _bbox[2] - _bbox[0])
+        _bbox_h = max(0, _bbox[3] - _bbox[1])
+        _face_scales.append(
+            {
+                "bbox_w": _bbox_w,
+                "bbox_h": _bbox_h,
+                "bbox_w_norm": round(_bbox_w / max(frame_width, 1), 4),
+                "bbox_h_norm": round(_bbox_h / max(frame_height, 1), 4),
+                "detector_score": round(float(_entry.get("score", 0.0)), 4),
+                "crop_scale": round(float(_entry.get("crop_scale", 1.0)), 3),
+            }
+        )
+    report_debug_event(
+        "A",
+        "app.py:detect_focus:landmark-summary",
+        "[DEBUG] detect_focus landmark summary",
+        {
+            "frame_width": frame_width,
+            "frame_height": frame_height,
+            "detector_face_count": detector_face_count,
+            "landmark_count": len(detected_faces),
+            "face_scales": _face_scales,
+            "use_tasks": USE_TASKS,
+            "detection_scale": round(detection_scale, 3),
+        },
+    )
+    # #endregion
+
+    if not detected_faces:
         cleanup_tracks()
+        # #region debug-point B:no-face
+        report_debug_event(
+            "B",
+            "app.py:detect_focus:no-face",
+            "[DEBUG] detect_focus no face detected",
+            {
+                "frame_width": frame_width,
+                "frame_height": frame_height,
+                "detector_face_count": detector_face_count,
+                "tracked_faces": len(TRACKS),
+            },
+        )
+        # #endregion
         font_scale = max(0.6, min(3.0, frame_height / 480.0))
         thickness = max(1, int(round(frame_height / 240.0)))
         cv2.putText(
@@ -714,15 +1044,16 @@ def detect_focus(frame, detailed=False, return_metrics=False, use_trained=True):
 
     used_track_ids = set()
     people_metrics = []
-    sorted_landmarks = sorted(
-        landmarks_list,
-        key=lambda landmarks: get_face_bbox(landmarks, frame_width, frame_height)[0],
+    sorted_detected_faces = sorted(
+        detected_faces,
+        key=lambda entry: entry["bbox"][0],
     )
 
-    for landmarks in sorted_landmarks:
-        bbox = get_face_bbox(landmarks, frame_width, frame_height)
+    for detected_face in sorted_detected_faces:
+        landmarks = detected_face["landmarks"]
+        bbox = detected_face["bbox"]
         centroid = ((bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0)
-        track_id, track_state = assign_track_id(centroid, bgr.shape, used_track_ids)
+        track_id, track_state = assign_track_id(centroid, bbox, bgr.shape, used_track_ids)
         person_metrics = analyze_face(
             landmarks,
             bgr.shape,
@@ -833,6 +1164,20 @@ async def analyze_frame(request: FrameRequest):
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if img is None:
             raise HTTPException(status_code=400, detail="Invalid image")
+
+        # #region debug-point C:incoming-frame
+        report_debug_event(
+            "C",
+            "app.py:analyze_frame:incoming-frame",
+            "[DEBUG] analyze_frame incoming frame",
+            {
+                "encoded_bytes": len(img_data),
+                "decoded_width": int(img.shape[1]),
+                "decoded_height": int(img.shape[0]),
+                "use_trained": bool(request.use_trained),
+            },
+        )
+        # #endregion
         
         # Convert to RGB
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -840,6 +1185,20 @@ async def analyze_frame(request: FrameRequest):
         # Analyze
         result_frame, metrics = detect_focus(img_rgb, return_metrics=True, use_trained=request.use_trained)
         append_record_events(metrics)
+
+        # #region debug-point D:analyze-result
+        report_debug_event(
+            "D",
+            "app.py:analyze_frame:analyze-result",
+            "[DEBUG] analyze_frame result summary",
+            {
+                "status": metrics.get("status") if isinstance(metrics, dict) else "unknown",
+                "people_count": metrics.get("people_count", 0) if isinstance(metrics, dict) else 0,
+                "focused_count": metrics.get("focused_count", 0) if isinstance(metrics, dict) else 0,
+                "not_focused_count": metrics.get("not_focused_count", 0) if isinstance(metrics, dict) else 0,
+            },
+        )
+        # #endregion
         
         # Encode result frame to base64
         _, buffer = cv2.imencode('.jpg', result_frame)

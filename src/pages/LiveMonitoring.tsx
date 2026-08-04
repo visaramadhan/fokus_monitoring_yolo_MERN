@@ -4,6 +4,11 @@ import axios from 'axios';
 import { useAuth } from '../contexts/AuthContext';
 import { useStatusModal } from '../contexts/StatusModalContext';
 
+const DEBUG_SERVER_URL = 'http://127.0.0.1:7777/event';
+const DEBUG_SESSION_ID = 'face-distance-detection';
+const DATA_FETCH_RETRY_ATTEMPTS = 3;
+const DATA_FETCH_RETRY_DELAY_MS = 1200;
+
 interface UserOption {
   _id: string;
   role: string;
@@ -100,12 +105,14 @@ export default function LiveMonitoring() {
     summary: RecordSummaryRow[];
     schedule: Schedule | null;
   } | null>(null);
+  const [animatedSummaryKeys, setAnimatedSummaryKeys] = useState<string[]>([]);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const captureCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const analyzeIntervalRef = useRef<number | null>(null);
   const isAnalyzingRef = useRef(false);
   const streamRef = useRef<MediaStream | null>(null);
+  const analyzeDebugCounterRef = useRef(0);
 
   const formatNow = () => {
     const date = new Date();
@@ -170,6 +177,28 @@ export default function LiveMonitoring() {
     return Number(hours) * 60 + Number(minutes);
   };
 
+  const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+
+  const isDatabaseInitializingError = (error: any) =>
+    error?.response?.status === 503 &&
+    String(error?.response?.data?.message || '').toLowerCase().includes('database initializing');
+
+  const requestWithDatabaseRetry = async <T,>(request: () => Promise<T>) => {
+    let lastError: any = null;
+    for (let attempt = 1; attempt <= DATA_FETCH_RETRY_ATTEMPTS; attempt += 1) {
+      try {
+        return await request();
+      } catch (error) {
+        lastError = error;
+        if (!isDatabaseInitializingError(error) || attempt === DATA_FETCH_RETRY_ATTEMPTS) {
+          throw error;
+        }
+        await wait(DATA_FETCH_RETRY_DELAY_MS);
+      }
+    }
+    throw lastError;
+  };
+
   const getSchedulePresentation = (schedule: Schedule) => {
     const today = toDateOnly(new Date());
     const scheduleDate = toDateOnly(schedule.tanggal);
@@ -219,6 +248,48 @@ export default function LiveMonitoring() {
       cardClass: 'border-blue-200 bg-blue-50',
     };
   };
+
+  const totalStudents = analyzeMetrics?.people_count ?? 0;
+  const focusedStudents = analyzeMetrics?.focused_count ?? 0;
+  const notFocusedStudents = analyzeMetrics?.not_focused_count ?? 0;
+  const focusRate = totalStudents > 0 ? (focusedStudents / totalStudents) * 100 : 0;
+  const realtimeSummaryCards = [
+    {
+      label: 'Total Student',
+      value: totalStudents,
+      valueClass: 'text-slate-900',
+      cardClass: 'border-slate-200 bg-slate-50',
+      accentClass: 'bg-slate-700',
+    },
+    {
+      label: 'Focused',
+      value: focusedStudents,
+      valueClass: 'text-emerald-700',
+      cardClass: 'border-emerald-100 bg-emerald-50',
+      accentClass: 'bg-emerald-500',
+    },
+    {
+      label: 'Not Focused',
+      value: notFocusedStudents,
+      valueClass: 'text-rose-700',
+      cardClass: 'border-rose-100 bg-rose-50',
+      accentClass: 'bg-rose-500',
+    },
+    {
+      label: 'Focus Rate',
+      value: `${focusRate.toFixed(1)}%`,
+      valueClass: 'text-blue-700',
+      cardClass: 'border-blue-100 bg-blue-50',
+      accentClass: 'bg-blue-500',
+    },
+  ];
+
+  useEffect(() => {
+    const keys = realtimeSummaryCards.map((card) => card.label);
+    setAnimatedSummaryKeys(keys);
+    const timer = window.setTimeout(() => setAnimatedSummaryKeys([]), 450);
+    return () => window.clearTimeout(timer);
+  }, [totalStudents, focusedStudents, notFocusedStudents, focusRate]);
 
   // Fetch initial data
   useEffect(() => {
@@ -337,7 +408,7 @@ export default function LiveMonitoring() {
 
   const fetchDosen = async () => {
     try {
-      const res = await axios.get('/api/users');
+      const res = await requestWithDatabaseRetry(() => axios.get('/api/users'));
       const dosenList = (res.data || []).filter((u: UserOption) => u.role === 'dosen');
       setDosenOptions(dosenList);
     } catch (err) {
@@ -354,7 +425,7 @@ export default function LiveMonitoring() {
         params.dosen_id = user.id;
       }
 
-      const scheduleRes = await axios.get('/api/jadwal', { params });
+      const scheduleRes = await requestWithDatabaseRetry(() => axios.get('/api/jadwal', { params }));
       const scheduleList = Array.isArray(scheduleRes.data) ? scheduleRes.data : [];
       const kelasSet = new Set<string>();
       scheduleList.forEach((schedule: Schedule) => {
@@ -366,6 +437,7 @@ export default function LiveMonitoring() {
       setAvailableKelas(Array.from(kelasSet).sort());
     } catch (err) {
       console.error('Error fetching data:', err);
+      showError('Gagal', 'Gagal memuat data kelas untuk live monitoring.');
     }
   };
 
@@ -378,7 +450,7 @@ export default function LiveMonitoring() {
         params.dosen_id = selectedDosenId;
       }
 
-      const res = await axios.get('/api/jadwal', { params });
+      const res = await requestWithDatabaseRetry(() => axios.get('/api/jadwal', { params }));
       const scheduleList = Array.isArray(res.data) ? res.data : [];
       scheduleList.sort((a: Schedule, b: Schedule) => {
         const dateDiff = toDateOnly(a.tanggal).getTime() - toDateOnly(b.tanggal).getTime();
@@ -429,7 +501,17 @@ export default function LiveMonitoring() {
       setIsCameraLoading(true);
       stopCameraStream();
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: selectedCameraId ? { deviceId: { exact: selectedCameraId } } : true,
+        video: selectedCameraId
+          ? {
+              deviceId: { exact: selectedCameraId },
+              width: { ideal: 1280, max: 1920 },
+              height: { ideal: 720, max: 1080 },
+            }
+          : {
+              width: { ideal: 1280, max: 1920 },
+              height: { ideal: 720, max: 1080 },
+              facingMode: 'user',
+            },
         audio: false,
       });
       setCameraStream(stream);
@@ -460,6 +542,30 @@ export default function LiveMonitoring() {
       if (!ctx) return;
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       const imageBase64 = canvas.toDataURL('image/jpeg', 0.8);
+      analyzeDebugCounterRef.current += 1;
+      if (analyzeDebugCounterRef.current % 10 === 1) {
+        // #region debug-point E:frontend-frame
+        fetch(DEBUG_SERVER_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sessionId: DEBUG_SESSION_ID,
+            runId: 'pre-fix',
+            hypothesisId: 'E',
+            location: 'LiveMonitoring.tsx:analyzeCurrentFrame:frontend-frame',
+            msg: '[DEBUG] frontend frame capture summary',
+            data: {
+              videoWidth: video.videoWidth,
+              videoHeight: video.videoHeight,
+              canvasWidth: canvas.width,
+              canvasHeight: canvas.height,
+              imageLength: imageBase64.length,
+            },
+            ts: Date.now(),
+          }),
+        }).catch(() => {});
+        // #endregion
+      }
       const response = await axios.post('/api/ai-service/focus/analyze-frame', {
         image_base64: imageBase64,
         use_trained: true,
@@ -467,6 +573,27 @@ export default function LiveMonitoring() {
       setAnnotatedImage(String(response.data?.annotated_image_base64 || ''));
       const metrics = (response.data?.metrics || null) as AnalyzeMetrics | null;
       setAnalyzeMetrics(metrics);
+      if (analyzeDebugCounterRef.current % 10 === 1) {
+        // #region debug-point E:frontend-result
+        fetch(DEBUG_SERVER_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sessionId: DEBUG_SESSION_ID,
+            runId: 'pre-fix',
+            hypothesisId: 'E',
+            location: 'LiveMonitoring.tsx:analyzeCurrentFrame:frontend-result',
+            msg: '[DEBUG] frontend analyze result summary',
+            data: {
+              peopleCount: metrics?.people_count ?? 0,
+              focusedCount: metrics?.focused_count ?? 0,
+              notFocusedCount: metrics?.not_focused_count ?? 0,
+            },
+            ts: Date.now(),
+          }),
+        }).catch(() => {});
+        // #endregion
+      }
       if (isMonitoring && metrics?.people && metrics.people.length > 0) {
         const timestamp = formatNow();
         const nextEvents = metrics.people.map((person, index) => ({
@@ -537,6 +664,9 @@ export default function LiveMonitoring() {
       setRecordSummary([]);
       setAnalyzeMetrics(null);
       setLastMonitoringReport(null);
+
+      // Reset AI tracking state so every monitoring session starts from ID 1
+      await axios.post('/api/ai-service/focus/reset');
 
       // Start AI service recording
       await axios.post('/api/ai-service/focus/record/start');
@@ -953,22 +1083,30 @@ export default function LiveMonitoring() {
                   </div>
                 )}
               </div>
-              <div className="border-t border-gray-100 px-6 py-4 grid grid-cols-1 md:grid-cols-4 gap-4 text-sm">
-                <div className="rounded-lg bg-slate-50 px-4 py-3">
-                  <div className="text-gray-500">Status AI</div>
-                  <div className="font-semibold text-gray-800">{analyzeMetrics?.status || 'menunggu'}</div>
+              <div className="border-t border-gray-100 px-6 py-5">
+                <div className="mb-4 flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <h3 className="text-lg font-semibold text-gray-800">Realtime Detection Summary</h3>
+                    <p className="text-sm text-gray-500">Nilai di bawah ini akan berubah mengikuti hasil deteksi terbaru.</p>
+                  </div>
+                  <span className="inline-flex w-fit rounded-full bg-amber-50 px-3 py-1 text-sm font-medium text-amber-700">
+                    Status AI: {analyzeMetrics?.status || 'menunggu'}
+                  </span>
                 </div>
-                <div className="rounded-lg bg-slate-50 px-4 py-3">
-                  <div className="text-gray-500">Jumlah Orang</div>
-                  <div className="font-semibold text-gray-800">{analyzeMetrics?.people_count ?? 0}</div>
-                </div>
-                <div className="rounded-lg bg-slate-50 px-4 py-3">
-                  <div className="text-gray-500">Focused</div>
-                  <div className="font-semibold text-green-700">{analyzeMetrics?.focused_count ?? 0}</div>
-                </div>
-                <div className="rounded-lg bg-slate-50 px-4 py-3">
-                  <div className="text-gray-500">Not Focused</div>
-                  <div className="font-semibold text-red-700">{analyzeMetrics?.not_focused_count ?? 0}</div>
+
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+                  {realtimeSummaryCards.map((card) => (
+                    <div
+                      key={card.label}
+                      className={`rounded-xl border px-4 py-4 shadow-sm transition-all duration-300 ${card.cardClass} ${animatedSummaryKeys.includes(card.label) ? 'scale-[1.02] shadow-md' : ''}`}
+                    >
+                      <div className="mb-3 flex items-center gap-2">
+                        <span className={`h-2.5 w-2.5 rounded-full ${card.accentClass} ${animatedSummaryKeys.includes(card.label) ? 'animate-pulse' : ''}`}></span>
+                        <div className="text-sm font-medium text-gray-500">{card.label}</div>
+                      </div>
+                      <div className={`mt-2 text-3xl font-bold ${card.valueClass}`}>{card.value}</div>
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>
