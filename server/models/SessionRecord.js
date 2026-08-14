@@ -41,6 +41,18 @@ const seatDataSchema = new mongoose.Schema({
     min: 0,
     max: 100
   },
+  focus_score: {
+    type: Number,
+    default: 0,
+    min: 0,
+    max: 100
+  },
+  average_confidence: {
+    type: Number,
+    default: 0,
+    min: 0,
+    max: 1
+  },
   gesture_history: [gestureHistorySchema],
   final_status: {
     type: String,
@@ -57,6 +69,12 @@ const detectionSummarySchema = new mongoose.Schema({
   average_focus_percentage: {
     type: Number,
     default: 0
+  },
+  average_focus_score: {
+    type: Number,
+    default: 0,
+    min: 0,
+    max: 100
   },
   peak_focus_time: {
     type: Number,
@@ -170,9 +188,13 @@ sessionRecordSchema.index({ live_session_id: 1 }, { sparse: true });
 sessionRecordSchema.pre('save', function(next) {
   if (this.seat_data.length > 0) {
     const totalFocusDuration = this.seat_data.reduce((sum, seat) => sum + seat.focus_duration, 0);
-    const averageFocusDuration = totalFocusDuration / this.seat_data.length;
-    
+    const totalWeighted = this.seat_data.reduce((sum, seat) => sum + (Number(seat.focus_score || 0) * Math.max(1, Number(seat.focus_duration || 1))), 0);
+    const weightSum = this.seat_data.reduce((sum, seat) => sum + Math.max(1, Number(seat.focus_duration || 1)), 0);
+
     this.detection_summary.average_focus_percentage = this.seat_data.reduce((sum, seat) => sum + seat.focus_percentage, 0) / this.seat_data.length;
+    if (!this.detection_summary.average_focus_score || this.detection_summary.average_focus_score === 0) {
+      this.detection_summary.average_focus_score = weightSum > 0 ? Number((totalWeighted / weightSum).toFixed(2)) : 0;
+    }
     this.detection_summary.peak_focus_time = Math.max(...this.seat_data.map(seat => seat.focus_duration));
   }
   next();

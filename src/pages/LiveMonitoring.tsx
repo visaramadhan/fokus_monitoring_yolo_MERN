@@ -68,8 +68,20 @@ interface RecordSummaryRow {
   focused: number;
   notFocused: number;
   total: number;
+  average_confidence: number;
+  focus_score: number;
   firstSeen: string;
   lastSeen: string;
+}
+
+interface RecordingStatus {
+  mode: string;
+  session_start: string;
+  session_end: string;
+  total_events: number;
+  total_people: number;
+  focused_people_count: number;
+  average_focus_score: number;
 }
 
 export default function LiveMonitoring() {
@@ -90,6 +102,7 @@ export default function LiveMonitoring() {
   const [currentSessionId, setCurrentSessionId] = useState<string>('');
   const [sessionStartTime, setSessionStartTime] = useState<number>(0);
   const [recordStatusText, setRecordStatusText] = useState<string>('');
+  const [recordingStatus, setRecordingStatus] = useState<RecordingStatus | null>(null);
   const [recordEvents, setRecordEvents] = useState<RecordEventRow[]>([]);
   const [cameras, setCameras] = useState<CameraDevice[]>([]);
   const [selectedCameraId, setSelectedCameraId] = useState<string>('');
@@ -135,15 +148,36 @@ export default function LiveMonitoring() {
     }));
 
   const mapSummaryRows = (rows: any[]): RecordSummaryRow[] =>
-    rows.map((row: any) => ({
-      id: String(row?.[0] ?? ''),
-      label: String(row?.[1] ?? ''),
-      focused: Number(row?.[2] ?? 0),
-      notFocused: Number(row?.[3] ?? 0),
-      total: Number(row?.[4] ?? 0),
-      firstSeen: String(row?.[5] ?? ''),
-      lastSeen: String(row?.[6] ?? ''),
-    }));
+    rows.map((row: any): RecordSummaryRow => {
+      if (Array.isArray(row)) {
+        const focused = Number(row?.[2] ?? 0);
+        const notFocused = Number(row?.[3] ?? 0);
+        return {
+          id: String(row?.[0] ?? ''),
+          label: String(row?.[1] ?? ''),
+          focused,
+          notFocused,
+          total: Number(row?.[4] ?? (focused + notFocused)),
+          average_confidence: Number(row?.[5] ?? 0),
+          focus_score: Number(row?.[6] ?? 0),
+          firstSeen: String(row?.[7] ?? ''),
+          lastSeen: String(row?.[8] ?? ''),
+        };
+      }
+      const focused = Number(row?.focused ?? 0);
+      const notFocused = Number(row?.notFocused ?? row?.not_focused ?? 0);
+      return {
+        id: String(row?.id ?? ''),
+        label: String(row?.label ?? ''),
+        focused,
+        notFocused,
+        total: Number(row?.total ?? (focused + notFocused)),
+        average_confidence: Number(row?.averageConfidence ?? row?.average_confidence ?? 0),
+        focus_score: Number(row?.focusScore ?? row?.focus_score ?? 0),
+        firstSeen: String(row?.firstSeen ?? row?.first_seen ?? ''),
+        lastSeen: String(row?.lastSeen ?? row?.last_seen ?? ''),
+      };
+    });
 
   const parseDownloadFilename = (contentDisposition?: string) => {
     if (!contentDisposition) return null;
@@ -253,6 +287,27 @@ export default function LiveMonitoring() {
   const focusedStudents = analyzeMetrics?.focused_count ?? 0;
   const notFocusedStudents = analyzeMetrics?.not_focused_count ?? 0;
   const focusRate = totalStudents > 0 ? (focusedStudents / totalStudents) * 100 : 0;
+
+  const computeWeightedFocusScore = (rows: RecordSummaryRow[]): number => {
+    if (!Array.isArray(rows) || rows.length === 0) return 0;
+    let weightSum = 0;
+    let accum = 0;
+    rows.forEach((r) => {
+      const w = Math.max(1, Number(r.total || 0));
+      weightSum += w;
+      accum += Number(r.focus_score || 0) * w;
+    });
+    if (weightSum <= 0) {
+      const simple = rows.reduce((acc, r) => acc + Number(r.focus_score || 0), 0);
+      return Number((simple / rows.length).toFixed(2));
+    }
+    return Number((accum / weightSum).toFixed(2));
+  };
+
+  const explicitScore = recordingStatus ? Number(recordingStatus.average_focus_score || 0) : 0;
+  const summaryScore = computeWeightedFocusScore(recordSummary);
+  const currentAverageFocusScore = explicitScore > 0 ? explicitScore : summaryScore;
+
   const realtimeSummaryCards = [
     {
       label: 'Total Student',
@@ -282,6 +337,13 @@ export default function LiveMonitoring() {
       cardClass: 'border-blue-100 bg-blue-50',
       accentClass: 'bg-blue-500',
     },
+    {
+      label: 'Avg Focus Score',
+      value: `${currentAverageFocusScore.toFixed(1)}%`,
+      valueClass: 'text-indigo-700',
+      cardClass: 'border-indigo-100 bg-indigo-50',
+      accentClass: 'bg-indigo-500',
+    },
   ];
 
   useEffect(() => {
@@ -289,7 +351,7 @@ export default function LiveMonitoring() {
     setAnimatedSummaryKeys(keys);
     const timer = window.setTimeout(() => setAnimatedSummaryKeys([]), 450);
     return () => window.clearTimeout(timer);
-  }, [totalStudents, focusedStudents, notFocusedStudents, focusRate]);
+  }, [totalStudents, focusedStudents, notFocusedStudents, focusRate, currentAverageFocusScore]);
 
   // Fetch initial data
   useEffect(() => {
@@ -345,7 +407,9 @@ export default function LiveMonitoring() {
       try {
         const response = await axios.get('/api/ai-service/focus/record/status');
         if (!alive) return;
-        setRecordStatusText(String(response.data?.status || ''));
+        const rs = response.data?.recording_status || null;
+        setRecordingStatus(rs || null);
+        setRecordStatusText(String(rs?.mode || response.data?.status || ''));
         const rows = Array.isArray(response.data?.events) ? response.data.events : [];
         const summaryRows = Array.isArray(response.data?.summary) ? response.data.summary : [];
         setRecordEvents(mapEventRows(rows));
@@ -660,6 +724,7 @@ export default function LiveMonitoring() {
       setCurrentSessionId(sessionId);
       setSessionStartTime(Date.now());
       setRecordStatusText('Recording aktif | Menunggu event pertama...');
+      setRecordingStatus(null);
       setRecordEvents([]);
       setRecordSummary([]);
       setAnalyzeMetrics(null);
@@ -683,13 +748,13 @@ export default function LiveMonitoring() {
     try {
       // Stop AI service recording
       const recordStopRes = await axios.post('/api/ai-service/focus/record/stop');
-      const finalStatus = String(recordStopRes.data?.status || 'Recording selesai');
+      const finalRecordingStatus = recordStopRes.data?.recording_status || { mode: String(recordStopRes.data?.status || 'Recording selesai'), average_focus_score: 0 };
       const finalEvents = mapEventRows(Array.isArray(recordStopRes.data?.events) ? recordStopRes.data.events : []);
       const finalSummary = mapSummaryRows(Array.isArray(recordStopRes.data?.summary) ? recordStopRes.data.summary : []);
 
       // Stop session
       await axios.post(`/api/live-monitoring/stop/${currentSessionId}`, {
-        record_status: finalStatus,
+        record_status: finalRecordingStatus,
         record_events: finalEvents,
         record_summary: finalSummary,
       });
@@ -699,11 +764,12 @@ export default function LiveMonitoring() {
         await axios.put(`/api/jadwal/${selectedScheduleId}`, { status: 'completed' });
       }
 
-      setRecordStatusText(finalStatus);
+      setRecordingStatus(finalRecordingStatus || null);
+      setRecordStatusText(String(finalRecordingStatus?.mode || finalRecordingStatus || ''));
       setRecordEvents(finalEvents);
       setRecordSummary(finalSummary);
       setLastMonitoringReport({
-        status: finalStatus,
+        status: String(finalRecordingStatus?.mode || finalRecordingStatus || ''),
         events: finalEvents,
         summary: finalSummary,
         schedule: activeSchedule,
@@ -980,7 +1046,7 @@ export default function LiveMonitoring() {
                   </div>
                 )}
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-sm">
                   <div className="rounded-lg bg-white border border-slate-200 px-4 py-3">
                     <div className="text-slate-500">Total Event</div>
                     <div className="text-xl font-semibold text-slate-800">{lastMonitoringReport.events.length}</div>
@@ -988,6 +1054,12 @@ export default function LiveMonitoring() {
                   <div className="rounded-lg bg-white border border-slate-200 px-4 py-3">
                     <div className="text-slate-500">Jumlah Siswa Terdeteksi</div>
                     <div className="text-xl font-semibold text-slate-800">{lastMonitoringReport.summary.length}</div>
+                  </div>
+                  <div className="rounded-lg bg-white border border-indigo-200 px-4 py-3 bg-indigo-50/40">
+                    <div className="text-indigo-700 font-medium">Avg Focus Score</div>
+                    <div className="text-2xl font-bold text-indigo-800">
+                      {computeWeightedFocusScore(lastMonitoringReport.summary).toFixed(1)}%
+                    </div>
                   </div>
                   <div className="rounded-lg bg-white border border-slate-200 px-4 py-3">
                     <div className="text-slate-500">Status</div>
@@ -1004,6 +1076,8 @@ export default function LiveMonitoring() {
                         <th className="px-4 py-3 text-left font-medium text-slate-600">Focused</th>
                         <th className="px-4 py-3 text-left font-medium text-slate-600">Not Focused</th>
                         <th className="px-4 py-3 text-left font-medium text-slate-600">Total</th>
+                        <th className="px-4 py-3 text-left font-medium text-indigo-700">Focus Score %</th>
+                        <th className="px-4 py-3 text-left font-medium text-slate-600">Avg Conf</th>
                         <th className="px-4 py-3 text-left font-medium text-slate-600">First Seen</th>
                         <th className="px-4 py-3 text-left font-medium text-slate-600">Last Seen</th>
                       </tr>
@@ -1017,13 +1091,15 @@ export default function LiveMonitoring() {
                             <td className="px-4 py-3 text-slate-700">{row.focused}</td>
                             <td className="px-4 py-3 text-slate-700">{row.notFocused}</td>
                             <td className="px-4 py-3 text-slate-700">{row.total}</td>
+                            <td className="px-4 py-3 font-semibold text-indigo-800">{(row.focus_score || 0).toFixed(1)}%</td>
+                            <td className="px-4 py-3 text-slate-700">{(row.average_confidence || 0).toFixed(3)}</td>
                             <td className="px-4 py-3 text-slate-700">{row.firstSeen}</td>
                             <td className="px-4 py-3 text-slate-700">{row.lastSeen}</td>
                           </tr>
                         ))
                       ) : (
                         <tr>
-                          <td colSpan={7} className="px-4 py-6 text-center text-slate-500">
+                          <td colSpan={9} className="px-4 py-6 text-center text-slate-500">
                             Belum ada ringkasan event yang tersimpan.
                           </td>
                         </tr>

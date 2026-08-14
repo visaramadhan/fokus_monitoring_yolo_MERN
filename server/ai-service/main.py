@@ -141,11 +141,19 @@ def build_recording_status():
         mode = "Recording berhenti"
         session_end = format_timestamp(RECORD_SESSION_STOPPED_AT)
 
+    summary_rows = build_record_summary_rows()
+    session_focus_score = build_session_focus_score(summary_rows)
+    total_people = len(summary_rows)
+    total_focused_people = sum(1 for r in summary_rows if (r.get("focus_score") or 0) >= 60)
+
     return {
         "mode": mode,
         "session_start": session_start,
         "session_end": session_end,
-        "total_events": len(RECORD_EVENTS)
+        "total_events": len(RECORD_EVENTS),
+        "total_people": total_people,
+        "focused_people_count": total_focused_people,
+        "average_focus_score": float(session_focus_score),
     }
 
 def build_record_event_rows(limit=100):
@@ -158,27 +166,69 @@ def build_record_summary_rows():
     summary = {}
     for event in RECORD_EVENTS:
         person_id = event["id"]
+        conf = float(event.get("confidence", 0.0) or 0.0)
+        is_focused = bool(event["status"].startswith("Focused"))
         if person_id not in summary:
             summary[person_id] = {
                 "id": person_id,
                 "label": event["label"],
                 "focused": 0,
                 "not_focused": 0,
+                "confidence_sum": 0.0,
+                "focused_confidence_sum": 0.0,
                 "first_seen": event["timestamp"],
                 "last_seen": event["timestamp"],
             }
 
         item = summary[person_id]
-        if event["status"].startswith("Focused"):
+        if is_focused:
             item["focused"] += 1
+            item["focused_confidence_sum"] += conf
         else:
             item["not_focused"] += 1
+        item["confidence_sum"] += conf
         item["last_seen"] = event["timestamp"]
 
     rows = []
     for person_id in sorted(summary):
-        rows.append(summary[person_id])
+        item = summary[person_id]
+        total = int(item["focused"]) + int(item["not_focused"])
+        avg_conf = (item["confidence_sum"] / total) if total > 0 else 0.0
+        if item["confidence_sum"] > 0:
+            focus_score = round((item["focused_confidence_sum"] / item["confidence_sum"]) * 100.0, 2)
+        else:
+            focus_score = 0.0
+        rows.append({
+            "id": item["id"],
+            "label": item["label"],
+            "focused": item["focused"],
+            "not_focused": item["not_focused"],
+            "total": total,
+            "average_confidence": round(float(avg_conf), 4),
+            "confidence_sum": round(float(item["confidence_sum"]), 4),
+            "focused_confidence_sum": round(float(item["focused_confidence_sum"]), 4),
+            "focus_score": float(focus_score),
+            "first_seen": item["first_seen"],
+            "last_seen": item["last_seen"],
+        })
     return rows
+
+
+def build_session_focus_score(summary_rows=None):
+    rows = summary_rows if summary_rows is not None else build_record_summary_rows()
+    if not rows:
+        return 0.0
+    total_weight = 0
+    score_accum = 0.0
+    for r in rows:
+        weight = int(r.get("total", 0) or 0)
+        if weight <= 0:
+            continue
+        total_weight += weight
+        score_accum += float(r.get("focus_score", 0.0) or 0.0) * weight
+    if total_weight <= 0:
+        return 0.0
+    return round(score_accum / total_weight, 2)
 
 def append_record_events(metrics):
     if not RECORDING_ACTIVE or not isinstance(metrics, dict):
@@ -249,11 +299,13 @@ def build_excel_xml_worksheet(sheet_name, headers, rows):
 def export_record_to_excel_xml(export_path):
     event_rows = build_record_event_rows(limit=RECORD_EVENT_LIMIT)
     summary_rows = build_record_summary_rows()
+    session_focus_score = build_session_focus_score(summary_rows)
     session_rows = [
         ["recording_status", "aktif" if RECORDING_ACTIVE else "berhenti"],
         ["session_started_at", format_timestamp(RECORD_SESSION_STARTED_AT)],
         ["session_stopped_at", format_timestamp(RECORD_SESSION_STOPPED_AT)],
         ["total_events", len(RECORD_EVENTS)],
+        ["average_focus_score", session_focus_score],
     ]
 
     workbook_xml = [
@@ -264,11 +316,16 @@ def export_record_to_excel_xml(export_path):
         " xmlns:x=\"urn:schemas-microsoft-com:office:excel\"",
         " xmlns:ss=\"urn:schemas-microsoft-com:office:spreadsheet\">",
         build_excel_xml_worksheet("session_info", ["field", "value"], session_rows),
-        build_excel_xml_worksheet("events", ["timestamp", "id", "label", "status", "confidence"], 
+        build_excel_xml_worksheet("events", ["timestamp", "id", "label", "status", "confidence"],
                                    [[e["timestamp"], e["id"], e["label"], e["status"], e["confidence"]] for e in event_rows]),
-        build_excel_xml_worksheet("summary", ["id", "label", "focused", "not_focused", "total", "first_seen", "last_seen"],
-                                   [[s["id"], s["label"], s["focused"], s["not_focused"], 
-                                     s["focused"] + s["not_focused"], s["first_seen"], s["last_seen"]] for s in summary_rows]),
+        build_excel_xml_worksheet(
+            "summary",
+            ["id", "label", "focused", "not_focused", "total",
+             "average_confidence", "focus_score", "first_seen", "last_seen"],
+            [[s["id"], s["label"], s["focused"], s["not_focused"], s["total"],
+              s.get("average_confidence", 0), s.get("focus_score", 0),
+              s["first_seen"], s["last_seen"]] for s in summary_rows]
+        ),
         "</Workbook>",
     ]
 
@@ -277,6 +334,8 @@ def export_record_to_excel_xml(export_path):
 
 def export_record_to_excel():
     timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(time.time()))
+    summary_rows = build_record_summary_rows()
+    session_focus_score = build_session_focus_score(summary_rows)
     if Workbook is not None:
         export_path = os.path.abspath(os.path.join(EXPORT_DIR, f"focus_record_{timestamp}.xlsx"))
         workbook = Workbook()
@@ -287,6 +346,7 @@ def export_record_to_excel():
         session_sheet.append(["session_started_at", format_timestamp(RECORD_SESSION_STARTED_AT)])
         session_sheet.append(["session_stopped_at", format_timestamp(RECORD_SESSION_STOPPED_AT)])
         session_sheet.append(["total_events", len(RECORD_EVENTS)])
+        session_sheet.append(["average_focus_score", session_focus_score])
 
         events_sheet = workbook.create_sheet(title="events")
         events_sheet.append(["timestamp", "id", "label", "status", "confidence"])
@@ -294,17 +354,21 @@ def export_record_to_excel():
             events_sheet.append([e["timestamp"], e["id"], e["label"], e["status"], e["confidence"]])
 
         summary_sheet = workbook.create_sheet(title="summary")
-        summary_sheet.append(["id", "label", "focused", "not_focused", "total", "first_seen", "last_seen"])
-        for s in build_record_summary_rows():
-            summary_sheet.append([s["id"], s["label"], s["focused"], s["not_focused"],
-                                  s["focused"] + s["not_focused"], s["first_seen"], s["last_seen"]])
+        summary_sheet.append(["id", "label", "focused", "not_focused", "total",
+                              "average_confidence", "focus_score", "first_seen", "last_seen"])
+        for s in summary_rows:
+            summary_sheet.append([s["id"], s["label"], s["focused"], s["not_focused"], s["total"],
+                                  s.get("average_confidence", 0), s.get("focus_score", 0),
+                                  s["first_seen"], s["last_seen"]])
 
         workbook.save(export_path)
-        return {"status": "success", "filename": os.path.basename(export_path), "path": export_path}
+        return {"status": "success", "filename": os.path.basename(export_path), "path": export_path,
+                "average_focus_score": session_focus_score}
 
     export_path = os.path.abspath(os.path.join(EXPORT_DIR, f"focus_record_{timestamp}.xls"))
     export_record_to_excel_xml(export_path)
-    return {"status": "success", "filename": os.path.basename(export_path), "path": export_path}
+    return {"status": "success", "filename": os.path.basename(export_path), "path": export_path,
+            "average_focus_score": session_focus_score}
 
 def eye_aspect_ratio(landmarks, eye_indices):
     points = [(landmarks[i].x, landmarks[i].y) for i in eye_indices]

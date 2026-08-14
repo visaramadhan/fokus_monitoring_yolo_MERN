@@ -34,6 +34,18 @@ const dataFokusSchema = new mongoose.Schema({
     min: 0,
     max: 100
   },
+  focus_score: {
+    type: Number,
+    default: 0,
+    min: 0,
+    max: 100
+  },
+  average_confidence: {
+    type: Number,
+    default: 0,
+    min: 0,
+    max: 1
+  },
   status: {
     type: String,
     enum: ['Baik', 'Cukup', 'Kurang'],
@@ -161,6 +173,12 @@ const pertemuanSchema = new mongoose.Schema({
     turning_back_count: {
       type: Number,
       default: 0
+    },
+    average_focus_score: {
+      type: Number,
+      default: 0,
+      min: 0,
+      max: 100
     }
   },
   detection_model_type: {
@@ -187,10 +205,15 @@ pertemuanSchema.pre('save', function(next) {
   if (this.data_fokus.length > 0) {
     const totalFokus = this.data_fokus.reduce((sum, data) => sum + data.persen_fokus, 0);
     const totalTidakFokus = this.data_fokus.reduce((sum, data) => sum + data.persen_tidak_fokus, 0);
-    
+    const totalWeighted = this.data_fokus.reduce((sum, data) => sum + (Number(data.focus_score || 0) * Math.max(1, Number(data.waktu_hadir || 1))), 0);
+    const weightSum = this.data_fokus.reduce((sum, data) => sum + Math.max(1, Number(data.waktu_hadir || 1)), 0);
+
     this.hasil_akhir_kelas.fokus = Number((totalFokus / this.data_fokus.length).toFixed(2));
     this.hasil_akhir_kelas.tidak_fokus = Number((totalTidakFokus / this.data_fokus.length).toFixed(2));
     this.hasil_akhir_kelas.jumlah_hadir = this.data_fokus.length;
+    if (!this.hasil_akhir_kelas.average_focus_score || this.hasil_akhir_kelas.average_focus_score === 0) {
+      this.hasil_akhir_kelas.average_focus_score = weightSum > 0 ? Number((totalWeighted / weightSum).toFixed(2)) : 0;
+    }
   }
   next();
 });

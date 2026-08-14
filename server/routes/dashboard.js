@@ -83,15 +83,21 @@ router.get('/overview', auth, async (req, res) => {
 
     // Get focus statistics
     const allMeetings = await Pertemuan.find(query);
-    const totalFocusData = allMeetings.reduce((acc, meeting) => {
+    const totals = allMeetings.reduce((acc, meeting) => {
       acc.totalFocus += meeting.hasil_akhir_kelas.fokus || 0;
+      acc.totalFocusScore += Number(meeting.hasil_akhir_kelas.average_focus_score || 0);
+      acc.weightedScoreSum += Number(meeting.hasil_akhir_kelas.average_focus_score || 0) * Math.max(1, Number(meeting.hasil_akhir_kelas.jumlah_hadir || meeting.durasi_pertemuan || 1));
+      acc.weightSum += Math.max(1, Number(meeting.hasil_akhir_kelas.jumlah_hadir || meeting.durasi_pertemuan || 1));
       acc.count++;
       return acc;
-    }, { totalFocus: 0, count: 0 });
+    }, { totalFocus: 0, totalFocusScore: 0, weightedScoreSum: 0, weightSum: 0, count: 0 });
 
-    const averageFocus = totalFocusData.count > 0 
-      ? (totalFocusData.totalFocus / totalFocusData.count).toFixed(2)
+    const averageFocus = totals.count > 0
+      ? (totals.totalFocus / totals.count).toFixed(2)
       : 0;
+    const averageFocusScore = totals.weightSum > 0
+      ? Number((totals.weightedScoreSum / totals.weightSum).toFixed(2))
+      : (totals.count > 0 ? Number((totals.totalFocusScore / totals.count).toFixed(2)) : 0);
 
     // Get class performance
     const classPerformance = await Pertemuan.aggregate([
@@ -100,12 +106,17 @@ router.get('/overview', auth, async (req, res) => {
         $group: {
           _id: '$kelas',
           averageFocus: { $avg: '$hasil_akhir_kelas.fokus' },
+          averageFocusScore: { $avg: '$hasil_akhir_kelas.average_focus_score' },
           totalMeetings: { $sum: 1 }
         }
       },
       { $sort: { averageFocus: -1 } },
       { $limit: 5 }
-    ]);
+    ]).then((rows) => rows.map((r) => ({
+      ...r,
+      averageFocus: r.averageFocus ? Number(r.averageFocus.toFixed(2)) : 0,
+      averageFocusScore: r.averageFocusScore ? Number(r.averageFocusScore.toFixed(2)) : 0,
+    })));
 
     // Get dosen performance (admin only)
     let dosenPerformance = [];
@@ -126,6 +137,7 @@ router.get('/overview', auth, async (req, res) => {
             _id: '$dosen_id',
             nama_lengkap: { $first: '$dosen.nama_lengkap' },
             averageFocus: { $avg: '$hasil_akhir_kelas.fokus' },
+            averageFocusScore: { $avg: '$hasil_akhir_kelas.average_focus_score' },
             totalMeetings: { $sum: 1 },
             totalClasses: { $addToSet: '$kelas' }
           }
@@ -137,7 +149,11 @@ router.get('/overview', auth, async (req, res) => {
         },
         { $sort: { averageFocus: -1 } },
         { $limit: 8 }
-      ]);
+      ]).then((rows) => rows.map((r) => ({
+        ...r,
+        averageFocus: r.averageFocus ? Number(r.averageFocus.toFixed(2)) : 0,
+        averageFocusScore: r.averageFocusScore ? Number(r.averageFocusScore.toFixed(2)) : 0,
+      })));
     }
 
     res.json({
@@ -146,7 +162,8 @@ router.get('/overview', auth, async (req, res) => {
         totalMataKuliah,
         totalPertemuan,
         totalDosen,
-        averageFocus: parseFloat(averageFocus)
+        averageFocus: parseFloat(averageFocus),
+        averageFocusScore,
       },
       recentMeetings,
       classPerformance,
@@ -193,6 +210,7 @@ router.get('/focus-trends', auth, async (req, res) => {
               year: { $isoWeekYear: '$tanggal' }
             },
             averageFocus: { $avg: '$hasil_akhir_kelas.fokus' },
+            averageFocusScore: { $avg: '$hasil_akhir_kelas.average_focus_score' },
             totalMeetings: { $sum: 1 }
           }
         },
@@ -208,6 +226,7 @@ router.get('/focus-trends', auth, async (req, res) => {
               year: { $year: '$tanggal' }
             },
             averageFocus: { $avg: '$hasil_akhir_kelas.fokus' },
+            averageFocusScore: { $avg: '$hasil_akhir_kelas.average_focus_score' },
             totalMeetings: { $sum: 1 }
           }
         },
@@ -215,22 +234,19 @@ router.get('/focus-trends', auth, async (req, res) => {
       ]);
     }
 
-    const monthNames = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
-    ];
-
     let formattedTrends = [];
     if (interval === 'week') {
       formattedTrends = focusTrends.map(trend => ({
         month: `${trend._id.year}-W${String(trend._id.week).padStart(2, '0')}`,
-        focus: Math.round(trend.averageFocus),
+        focus: Math.round(Number(trend.averageFocus || 0)),
+        focusScore: Number((Number(trend.averageFocusScore || 0)).toFixed(2)),
         meetings: trend.totalMeetings
       }));
     } else {
       formattedTrends = focusTrends.map(trend => ({
         month: `${trend._id.year}-${String(trend._id.month).padStart(2, '0')}`,
-        focus: Math.round(trend.averageFocus),
+        focus: Math.round(Number(trend.averageFocus || 0)),
+        focusScore: Number((Number(trend.averageFocusScore || 0)).toFixed(2)),
         meetings: trend.totalMeetings
       }));
     }

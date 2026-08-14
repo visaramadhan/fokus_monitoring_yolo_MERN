@@ -31,22 +31,30 @@ function normalizeSummaryRows(summaryRows = []) {
   if (!Array.isArray(summaryRows)) return [];
   return summaryRows.map((row, index) => {
     if (Array.isArray(row)) {
+      const focused = Number(row?.[2] ?? 0);
+      const notFocused = Number(row?.[3] ?? 0);
       return {
         id: String(row?.[0] ?? `person-${index + 1}`),
         label: String(row?.[1] ?? `Person ${index + 1}`),
-        focused: Number(row?.[2] ?? 0),
-        not_focused: Number(row?.[3] ?? 0),
-        total: Number(row?.[4] ?? 0),
-        first_seen: String(row?.[5] ?? ''),
-        last_seen: String(row?.[6] ?? ''),
+        focused,
+        not_focused: notFocused,
+        total: Number(row?.[4] ?? (focused + notFocused)),
+        average_confidence: Number(row?.[5] ?? 0),
+        focus_score: Number(row?.[6] ?? 0),
+        first_seen: String(row?.[7] ?? ''),
+        last_seen: String(row?.[8] ?? ''),
       };
     }
+    const focused = Number(row?.focused ?? 0);
+    const notFocused = Number(row?.notFocused ?? row?.not_focused ?? 0);
     return {
       id: String(row?.id ?? `person-${index + 1}`),
       label: String(row?.label ?? `Person ${index + 1}`),
-      focused: Number(row?.focused ?? 0),
-      not_focused: Number(row?.notFocused ?? row?.not_focused ?? 0),
-      total: Number(row?.total ?? 0),
+      focused,
+      not_focused: notFocused,
+      total: Number(row?.total ?? (focused + notFocused)),
+      average_confidence: Number(row?.averageConfidence ?? row?.average_confidence ?? 0),
+      focus_score: Number(row?.focusScore ?? row?.focus_score ?? 0),
       first_seen: String(row?.firstSeen ?? row?.first_seen ?? ''),
       last_seen: String(row?.lastSeen ?? row?.last_seen ?? ''),
     };
@@ -82,6 +90,9 @@ function buildPertemuanMetrics(summaryRows = [], eventRows = []) {
   const focusPct = totalMoments > 0 ? Number(((totalFocused / totalMoments) * 100).toFixed(2)) : 0;
   const notFocusPct = totalMoments > 0 ? Number(((totalNotFocused / totalMoments) * 100).toFixed(2)) : 0;
 
+  let weightedScoreSum = 0;
+  let weightSum = 0;
+
   const dataFokus = summaryRows.map((row) => {
     const rowTotal = Number(row.total || (row.focused || 0) + (row.not_focused || 0));
     const persenFokus = rowTotal > 0 ? Number(((Number(row.focused || 0) / rowTotal) * 100).toFixed(2)) : 0;
@@ -89,6 +100,23 @@ function buildPertemuanMetrics(summaryRows = [], eventRows = []) {
     let status = 'Kurang';
     if (persenFokus >= 80) status = 'Baik';
     else if (persenFokus >= 60) status = 'Cukup';
+
+    let computedFocusScore = Number(row.focus_score || 0);
+    if ((!computedFocusScore || computedFocusScore === 0) && Array.isArray(eventRows) && eventRows.length > 0) {
+      const personEvents = eventRows.filter((event) => String(event.id) === String(row.id));
+      let confSum = 0;
+      let focusedConfSum = 0;
+      personEvents.forEach((ev) => {
+        const c = Number(ev.confidence || 0);
+        confSum += c;
+        if (ev.status && String(ev.status).startsWith('Focused')) focusedConfSum += c;
+      });
+      computedFocusScore = confSum > 0 ? Number(((focusedConfSum / confSum) * 100).toFixed(2)) : 0;
+    }
+    const rowAvgConf = Number(row.average_confidence || 0);
+    const weight = Math.max(1, rowTotal);
+    weightedScoreSum += computedFocusScore * weight;
+    weightSum += weight;
 
     return {
       id_siswa: row.label || row.id,
@@ -100,9 +128,13 @@ function buildPertemuanMetrics(summaryRows = [], eventRows = []) {
       waktu_hadir: rowTotal,
       persen_fokus: persenFokus,
       persen_tidak_fokus: persenTidakFokus,
+      focus_score: computedFocusScore,
+      average_confidence: rowAvgConf,
       status,
     };
   });
+
+  const avgFocusScore = weightSum > 0 ? Number((weightedScoreSum / weightSum).toFixed(2)) : 0;
 
   return {
     dataFokus,
@@ -112,6 +144,7 @@ function buildPertemuanMetrics(summaryRows = [], eventRows = []) {
       jumlah_hadir: summaryRows.length,
       fokus_count: totalFocused,
       tidak_fokus_count: totalNotFocused,
+      average_focus_score: avgFocusScore,
     },
   };
 }
@@ -291,7 +324,7 @@ router.post('/stop/:sessionId', auth, async (req, res) => {
   try {
     const { sessionId } = req.params;
     const { record_summary, record_events, record_status } = req.body || {};
-    
+
     const liveSession = await LiveSession.findOne({ sessionId });
     if (!liveSession) {
       return res.status(404).json({ message: 'Session not found' });
@@ -301,12 +334,42 @@ router.post('/stop/:sessionId', auth, async (req, res) => {
     liveSession.isActive = false;
     liveSession.summary.totalDuration = Math.floor((liveSession.endTime - liveSession.startTime) / 1000 / 60); // in minutes
 
-    await liveSession.save();
-
     const scheduleDoc = liveSession.jadwal_id ? await Schedule.findById(liveSession.jadwal_id) : null;
     const summaryRows = normalizeSummaryRows(record_summary);
     const eventRows = normalizeEventRows(record_events);
     const { dataFokus, hasilAkhirKelas } = buildPertemuanMetrics(summaryRows, eventRows);
+
+    const sessionAvgScoreFromAI = record_status && typeof record_status === 'object'
+      ? Number(record_status.average_focus_score || 0)
+      : 0;
+    if (sessionAvgScoreFromAI > 0) {
+      hasilAkhirKelas.average_focus_score = sessionAvgScoreFromAI;
+    }
+    liveSession.summary.average_focus_score = hasilAkhirKelas.average_focus_score;
+
+    if (summaryRows.length > 0 && Array.isArray(liveSession.summary.studentData)) {
+      const byLabel = new Map();
+      summaryRows.forEach((r) => byLabel.set(String(r.label || r.id), r));
+      liveSession.summary.studentData.forEach((s) => {
+        const row = byLabel.get(String(s.student_id));
+        if (row && (!s.focus_score || s.focus_score === 0)) {
+          s.focus_score = Number(row.focus_score || 0);
+        }
+      });
+      if (liveSession.summary.studentData.length === 0) {
+        liveSession.summary.studentData = summaryRows.map((r) => ({
+          student_id: String(r.label || r.id),
+          attendance_duration: Number(r.total || 0),
+          focus_percentage: r.total > 0 ? (Number(r.focused || 0) / r.total) * 100 : 0,
+          focus_minutes: Number(r.focused || 0),
+          not_focus_minutes: Number(r.not_focused || 0),
+          focus_score: Number(r.focus_score || 0),
+        }));
+      }
+    }
+
+    await liveSession.save();
+
     const pertemuanPayload = {
       sessionId: liveSession.sessionId,
       jadwal_id: liveSession.jadwal_id || scheduleDoc?._id || null,
@@ -320,7 +383,7 @@ router.post('/stop/:sessionId', auth, async (req, res) => {
       dosen_id: liveSession.dosen_id,
       durasi_pertemuan: Math.max(1, Number(liveSession.summary.totalDuration || 0)),
       topik: scheduleDoc?.topik || 'Live Monitoring Session',
-      catatan: String(record_status || '').trim(),
+      catatan: String(record_status?.mode || record_status || '').trim(),
       data_fokus: dataFokus,
       hasil_akhir_kelas: hasilAkhirKelas,
       record_events: eventRows,

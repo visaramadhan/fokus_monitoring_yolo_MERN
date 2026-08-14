@@ -18,13 +18,18 @@ import settingsRoutes from './routes/settings.js';
 import liveMonitoringRoutes from './routes/liveMonitoring.js';
 import exportRoutes from './routes/export.js';
 import sessionRecordsRoutes from './routes/sessionRecords.js';
-import roboflowHostedRoutes from './routes/roboflowHosted.js';
-import roboflowModelProxyRoutes from './routes/roboflowModelProxy.js';
 import jadwalRoutes from './routes/jadwal.js';
 import modelsRoutes from './routes/models.js';
 import profileRoutes from './routes/profile.js';
 import aiServiceProxyRoutes from './routes/aiServiceProxy.js';
 import { createDummyData, purgeAllData, purgeDummyData } from './utils/seedData.js';
+
+const roboflowDisabledHandler = (_req, res) => {
+  res.status(503).json({
+    success: false,
+    message: 'Akses Roboflow dinonaktifkan pada deployment ini.',
+  });
+};
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -110,8 +115,8 @@ app.use('/settings', settingsRoutes);
 app.use('/live-monitoring', liveMonitoringRoutes);
 app.use('/export', exportRoutes);
 app.use('/session-records', sessionRecordsRoutes);
-app.use('/roboflow', roboflowHostedRoutes);
-app.use('/roboflow-model', roboflowModelProxyRoutes);
+app.use('/roboflow', roboflowDisabledHandler);
+app.use('/roboflow-model', roboflowDisabledHandler);
 app.use('/jadwal', jadwalRoutes);
 app.use('/models', modelsRoutes);
 app.use('/profile', profileRoutes);

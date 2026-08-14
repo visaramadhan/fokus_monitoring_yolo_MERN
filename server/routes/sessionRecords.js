@@ -98,6 +98,24 @@ function averageFocusPercentage(detectionData) {
   return values.reduce((a, b) => a + b, 0) / values.length;
 }
 
+function averageFocusScoreFromSeatData(seatData, sessionDurationMs) {
+  if (!Array.isArray(seatData) || seatData.length === 0) return 0;
+  let weighted = 0;
+  let weight = 0;
+  seatData.forEach((seat) => {
+    const s = Number(seat?.focus_score || 0);
+    const dur = Number(seat?.total_focus_duration || seat?.focus_duration || sessionDurationMs || 1);
+    const w = Math.max(1, dur);
+    weighted += s * w;
+    weight += w;
+  });
+  if (weight <= 0) {
+    const simple = seatData.reduce((acc, s) => acc + Number(s?.focus_score || 0), 0);
+    return seatData.length > 0 ? Number((simple / seatData.length).toFixed(2)) : 0;
+  }
+  return Number((weighted / weight).toFixed(2));
+}
+
 async function enrichSessionRecordPayload(payload = {}) {
   const next = { ...payload };
   const liveSessionObjectId = toObjectIdOrNull(next.liveSessionId || next.live_session_id);
@@ -219,6 +237,41 @@ router.post('/', auth, async (req, res) => {
 
     const avgFocusPct = averageFocusPercentage(safeDetectionData);
 
+    const seatDataMapped = safeSeatData.map(seat => {
+      const focusScoreRaw = Number(seat.focus_score || 0);
+      const avgConfidence = Number(seat.average_confidence || 0);
+      let focusScore = focusScoreRaw;
+      if ((!focusScore || focusScore === 0) && seat.total_focus_duration > 0) {
+        focusScore = Number((
+          (seat.total_focus_duration > 0 ? Math.round((seat.total_focus_duration / sessionDurationMs) * 100) : 0)
+          * (0.6 + 0.4 * Math.max(0, Math.min(1, avgConfidence)))
+        ).toFixed(2));
+      }
+      return {
+        seat_id: Number(seat.seat_id),
+        student_id: seat.student_id || `Student-${seat.seat_id}`,
+        position: {
+          x: seat.x,
+          y: seat.y,
+          width: seat.width,
+          height: seat.height
+        },
+        focus_duration: seat.total_focus_duration,
+        focus_percentage: seat.total_focus_duration > 0
+          ? Math.round((seat.total_focus_duration / sessionDurationMs) * 100)
+          : 0,
+        focus_score: focusScore,
+        average_confidence: avgConfidence,
+        gesture_history: generateGestureHistory(seat, safeDetectionData),
+        final_status: seat.is_occupied ? (seat.total_focus_duration > 0 ? 'Focused' : 'Not Focused') : 'Absent'
+      };
+    });
+
+    const avgFocusScore = averageFocusScoreFromSeatData(
+      seatDataMapped.map(s => ({ ...s, total_focus_duration: s.focus_duration })),
+      sessionDurationMs
+    );
+
     const payload = {
       sessionId,
       live_session_id: enriched.live_session_id,
@@ -233,25 +286,11 @@ router.post('/', auth, async (req, res) => {
       jam_mulai: jamMulaiDate,
       jam_selesai: jamSelesaiDate,
       durasi: durasiMs,
-      seat_data: safeSeatData.map(seat => ({
-        seat_id: Number(seat.seat_id),
-        student_id: seat.student_id || `Student-${seat.seat_id}`,
-        position: {
-          x: seat.x,
-          y: seat.y,
-          width: seat.width,
-          height: seat.height
-        },
-        focus_duration: seat.total_focus_duration,
-        focus_percentage: seat.total_focus_duration > 0
-          ? Math.round((seat.total_focus_duration / sessionDurationMs) * 100)
-          : 0,
-        gesture_history: generateGestureHistory(seat, safeDetectionData),
-        final_status: seat.is_occupied ? (seat.total_focus_duration > 0 ? 'Focused' : 'Not Focused') : 'Absent'
-      })),
+      seat_data: seatDataMapped,
       detection_summary: {
         total_detections: safeDetectionData.length,
         average_focus_percentage: avgFocusPct,
+        average_focus_score: avgFocusScore,
         peak_focus_time: peakFocusTime,
         total_session_duration: sessionDurationMs
       },
@@ -338,6 +377,7 @@ router.get('/export/:id', auth, async (req, res) => {
       ['Summary'],
       ['Total Students', record.seat_data.length],
       ['Average Focus %', record.detection_summary.average_focus_percentage.toFixed(2)],
+      ['Average Focus Score (%)', (record.detection_summary.average_focus_score || 0).toFixed(2)],
       ['Peak Focus Duration (seconds)', Math.round(record.detection_summary.peak_focus_time / 1000)],
       ['Total Session Duration (minutes)', Math.round(record.detection_summary.total_session_duration / 60000)]
     ];
@@ -350,8 +390,10 @@ router.get('/export/:id', auth, async (req, res) => {
       'Position Y': seat.position.y,
       'Focus Duration (seconds)': Math.round(seat.focus_duration / 1000),
       'Focus Percentage': seat.focus_percentage,
+      'Focus Score (%)': (seat.focus_score || 0).toFixed(2),
+      'Avg Confidence': (seat.average_confidence || 0).toFixed(4),
       'Final Status': seat.final_status,
-      'Dominant Gesture': seat.gesture_history.length > 0 ? 
+      'Dominant Gesture': seat.gesture_history.length > 0 ?
         seat.gesture_history.reduce((a, b) => a.count > b.count ? a : b).gesture : 'None',
       'Gesture Changes': seat.gesture_history.length
     }));

@@ -6,7 +6,13 @@ const seatDataSchema = new mongoose.Schema({
   is_focused: Boolean,
   is_occupied: Boolean,
   attendance_time: Date,
-  departure_time: Date
+  departure_time: Date,
+  focus_score: {
+    type: Number,
+    default: 0,
+    min: 0,
+    max: 100
+  }
 });
 
 const detectionDataSchema = new mongoose.Schema({
@@ -49,6 +55,12 @@ const detectionDataSchema = new mongoose.Schema({
   focusPercentage: {
     type: Number,
     default: 0
+  },
+  average_focus_score: {
+    type: Number,
+    default: 0,
+    min: 0,
+    max: 100
   },
   record_interval_ms: {
     type: Number,
@@ -133,12 +145,24 @@ const liveSessionSchema = new mongoose.Schema({
       type: Number,
       default: 0
     },
+    average_focus_score: {
+      type: Number,
+      default: 0,
+      min: 0,
+      max: 100
+    },
     studentData: [{
       student_id: String,
-      attendance_duration: Number, // in minutes
+      attendance_duration: Number,
       focus_percentage: Number,
       focus_minutes: Number,
-      not_focus_minutes: Number
+      not_focus_minutes: Number,
+      focus_score: {
+        type: Number,
+        default: 0,
+        min: 0,
+        max: 100
+      }
     }]
   }
 }, {
